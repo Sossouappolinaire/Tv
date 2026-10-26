@@ -1,0 +1,43 @@
+name: Build APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      # Le dépôt est "à plat" (aucun dossier sauf .github).
+      # On construit ici la structure standard Android avant la compilation.
+      - name: Assembler le projet Android
+        run: |
+          mkdir -p app/src/main/java/bj/radio
+          mv ./*.java app/src/main/java/bj/radio/
+          mv AndroidManifest.xml app/src/main/AndroidManifest.xml
+          mv app.gradle app/build.gradle
+          find . -path ./.git -prune -o -type f -print | sort
+
+      - name: Installer Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Installer Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Compiler l'APK
+        run: gradle assembleDebug --stacktrace
+
+      - name: Publier l'APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: RadioTV-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
