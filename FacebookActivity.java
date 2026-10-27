@@ -1,21 +1,32 @@
 package bj.radio;
 
 import android.app.Activity;
-import android.app.DownloadManager;
+import android.app.AlertDialog;
+import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
-import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
+import android.text.InputType;
 import android.util.Base64;
+import android.util.TypedValue;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
+import android.view.WindowManager;
+import android.webkit.CookieManager;
+import android.webkit.ValueCallback;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
@@ -24,6 +35,7 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -32,186 +44,434 @@ import org.json.JSONTokener;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.net.CookieHandler;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLDecoder;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Télécharge une vidéo Facebook publique vers « Mes vidéos & audios ».
+ * Ecran « Vidéos Facebook » : analyse d'un lien, choix du format (SD / HD),
+ * confirmation, puis téléchargement avec barre de progression en bas de l'écran.
  *
- * Méthode en deux temps :
- *  1. lecture rapide de la page (comme un navigateur d'ordinateur, redirections et cookies suivis) ;
- *  2. si rien n'est trouvé, la page est ouverte dans un navigateur intégré et on récupère
- *     l'adresse du fichier vidéo au moment où Facebook la charge.
+ * Fichier autonome (aucune dépendance à Ui.java). Les vidéos sont enregistrées dans
+ * getExternalFilesDir(Movies), le même dossier que « Sans internet > Mes vidéos & audios ».
  */
 public class FacebookActivity extends Activity {
 
-    static final String UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            + "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-    static final String UA_BOT = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
-    static final String UA_TEL = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 "
-            + "(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+    // ---------- Couleurs (fond plus clair que l'ancien gris très sombre) ----------
+    private static final int C_HAUT = 0xFF6D82CB;
+    private static final int C_BG = 0xFF4A5EA6;
+    private static final int C_CARD = 0xFF3B4C8C;
+    private static final int C_ACCENT = 0xFFFF6B35;
+    private static final int C_VIOLET = 0xFF7B4DFF;
+    private static final int C_TXT2 = 0xFFE3E5EA;
 
-    static final String[] CLES_SD = {"browser_native_sd_url", "sd_src_no_ratelimit", "sd_src", "playable_url"};
-    static final String[] CLES_HD = {"browser_native_hd_url", "hd_src_no_ratelimit", "hd_src", "playable_url_quality_hd"};
+    private static final String UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+    private static final String UA_BOT = "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)";
+    private static final String UA_TEL = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+    private static final String[] CLES_SD = {"browser_native_sd_url", "sd_src_no_ratelimit", "sd_src", "playable_url"};
+    private static final String[] CLES_HD = {"browser_native_hd_url", "hd_src_no_ratelimit", "hd_src", "playable_url_quality_hd"};
+
+    private static final Pattern PROG = Pattern.compile(
+            "\"progressive_url\"\\s*:\\s*\"(https?:[^\"]+)\"(.{0,300}?)\"quality\"\\s*:\\s*\"(\\w+)\"", Pattern.DOTALL);
+    private static final Pattern META = Pattern.compile("<meta[^>]+>");
+    private static final Pattern CONTENT = Pattern.compile("content=\"([^\"]+)\"");
+    private static final Pattern SAUT_JS = Pattern.compile("location\\.href\\s*=\\s*\"([^\"]+)\"");
+    private static final Pattern EFG = Pattern.compile("[?&]efg=([^&]+)");
+    private static final Pattern TAG = Pattern.compile("\"vencode_tag\"\\s*:\\s*\"([^\"]*)\"");
+    private static final Pattern HAUTEUR = Pattern.compile("(\\d{3,4})p");
+    private static final Pattern LIEN = Pattern.compile("https?://\\S+");
 
     static {
-        // Facebook pose des cookies pendant les redirections : sans eux la page boucle ou se bloque
-        if (java.net.CookieHandler.getDefault() == null)
-            java.net.CookieHandler.setDefault(new java.net.CookieManager());
+        if (CookieHandler.getDefault() == null) {
+            CookieHandler.setDefault(new java.net.CookieManager());
+        }
     }
 
-    final Handler h = new Handler(Looper.getMainLooper());
-    final List<String[]> captures = new ArrayList<>();   // {adresse propre, étiquette, "r" si segment}
-    int generation = 0;
+    /** Ce qu'on a trouvé pour une vidéo. */
+    private static class Res {
+        String sd, hd, uaSd, uaHd;
+        String dashV, dashA, uaDash;
+    }
 
-    EditText etLien;
-    TextView tvEtat;
-    LinearLayout resultats, panneauWeb;
-    WebView web;
+    /** Ce qu'on va télécharger. audio != null : image et son séparés, à rassembler. */
+    private static class Plan {
+        final String nom, url, audio, ua;
+
+        Plan(String nom, String url, String audio, String ua) {
+            this.nom = nom;
+            this.url = url;
+            this.audio = audio;
+            this.ua = ua == null ? UA_PC : ua;
+        }
+    }
+
+    private final Handler h = new Handler(Looper.getMainLooper());
+    private final List<String[]> captures = new CopyOnWriteArrayList<>();
+
+    private EditText etLien;
+    private TextView tvEtat;
+    private LinearLayout resultats;
+    private LinearLayout panneauWeb;
+    private LinearLayout barre;
+    private TextView tvDlTitre;
+    private TextView tvDlInfo;
+    private ProgressBar pb;
+    private Button bAnnuler;
+    private Button bOk;
+    private WebView web;
+    private Thread threadDl;
+
+    private volatile int generation = 0;
+    private volatile boolean annule = false;
+    private volatile boolean enCours = false;
+    private volatile String etape = "";
+
+    // =====================================================================
+    //  Cycle de vie
+    // =====================================================================
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        Ui.fenetre(this);
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        int p = Ui.dp(this, 16);
-        root.setPadding(p, p, p, p);
+        getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
+        getWindow().setStatusBarColor(C_HAUT);
+        construire();
+        traiterIntent(getIntent());
+    }
 
-        Ui.ajouter(root, Ui.texte(this, "📘 Vidéos Facebook", 24, Ui.TXT, true), 0);
-        Ui.ajouter(root, Ui.texte(this,
-                "Collez le lien d'une vidéo publique, ou partagez-la depuis Facebook vers RiRe a GOGO. "
-                + "Téléchargez seulement vos propres vidéos ou celles dont l'auteur est d'accord, "
-                + "et respectez les conditions de Facebook.", 13, Ui.TXT2, false), 6);
+    @Override
+    protected void onNewIntent(Intent i) {
+        super.onNewIntent(i);
+        setIntent(i);
+        traiterIntent(i);
+    }
 
-        etLien = Ui.champ(this, "https://www.facebook.com/…/videos/…");
-        Ui.ajouter(root, etLien, 12);
+    @Override
+    protected void onDestroy() {
+        generation++;
+        annule = true;
+        nettoyerWeb();
+        super.onDestroy();
+    }
 
-        LinearLayout ligne = new LinearLayout(this);
-        Button bColler = Ui.bouton(this, "📋 Coller", Ui.VIOLET);
-        Button bAnalyser = Ui.bouton(this, "🔍 Analyser", Ui.ACCENT);
+    @Override
+    public void onBackPressed() {
+        if (panneauWeb.getVisibility() == View.VISIBLE) {
+            annulerWeb();
+            return;
+        }
+        if (enCours) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Téléchargement en cours")
+                    .setMessage("Annuler le téléchargement et quitter ?")
+                    .setPositiveButton("Annuler et quitter", (d, w) -> {
+                        annule = true;
+                        finish();
+                    })
+                    .setNegativeButton("Continuer", null)
+                    .show();
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private void traiterIntent(Intent i) {
+        if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
+        String u = premierLien(i.getStringExtra(Intent.EXTRA_TEXT));
+        if (u != null) {
+            etLien.setText(u);
+            analyser();
+        }
+    }
+
+    // =====================================================================
+    //  Interface : un seul bouton par action, rien en double
+    // =====================================================================
+
+    private void construire() {
+        LinearLayout racine = new LinearLayout(this);
+        racine.setOrientation(LinearLayout.VERTICAL);
+        racine.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{C_HAUT, C_BG}));
+
+        // --- En-tête : Retour + titre ---
+        LinearLayout entete = new LinearLayout(this);
+        entete.setOrientation(LinearLayout.HORIZONTAL);
+        entete.setGravity(Gravity.CENTER_VERTICAL);
+        entete.setPadding(dp(12), dp(10), dp(16), dp(10));
+        Button retour = bouton("← Retour", C_CARD);
+        retour.setOnClickListener(v -> onBackPressed());
+        TextView titre = texte("Vidéos Facebook", 20, true);
+        titre.setPadding(dp(14), 0, 0, 0);
+        entete.addView(retour, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        entete.addView(titre, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        racine.addView(entete, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // --- Contenu défilant ---
+        ScrollView sv = new ScrollView(this);
+        LinearLayout contenu = new LinearLayout(this);
+        contenu.setOrientation(LinearLayout.VERTICAL);
+        contenu.setPadding(dp(16), dp(4), dp(16), dp(16));
+        sv.addView(contenu, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView intro = texte("Collez le lien d'une vidéo publique, ou partagez-la depuis Facebook "
+                + "vers RiRe a GOGO. Téléchargez seulement vos propres vidéos ou celles dont "
+                + "l'auteur est d'accord, et respectez les conditions de Facebook.", 13, false);
+        intro.setTextColor(C_TXT2);
+        contenu.addView(intro, lp(-1, -2, 0, 0, 0, 12));
+
+        etLien = new EditText(this);
+        etLien.setHint("https://www.facebook.com/…/videos/…");
+        etLien.setHintTextColor(0xAAE3E5EA);
+        etLien.setTextColor(Color.WHITE);
+        etLien.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        etLien.setSingleLine(true);
+        etLien.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI);
+        etLien.setPadding(dp(14), dp(12), dp(14), dp(12));
+        etLien.setBackground(rond(C_CARD, 14, 0, 0));
+        contenu.addView(etLien, lp(-1, -2, 0, 0, 0, 10));
+
+        LinearLayout rangee = new LinearLayout(this);
+        rangee.setOrientation(LinearLayout.HORIZONTAL);
+        Button bColler = bouton("📋 Coller", C_VIOLET);
         bColler.setOnClickListener(v -> coller());
+        Button bAnalyser = bouton("🔍 Analyser", C_ACCENT);
         bAnalyser.setOnClickListener(v -> analyser());
-        ligne.addView(bColler, Ui.lp(this, 0, -2, 1f, 0, 0));
-        ligne.addView(bAnalyser, Ui.lp(this, 0, -2, 1f, 0, 8));
-        Ui.ajouter(root, ligne, 8);
+        LinearLayout.LayoutParams lpa = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lpa.rightMargin = dp(6);
+        LinearLayout.LayoutParams lpb = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        lpb.leftMargin = dp(6);
+        rangee.addView(bColler, lpa);
+        rangee.addView(bAnalyser, lpb);
+        contenu.addView(rangee, lp(-1, -2, 0, 0, 0, 12));
 
-        tvEtat = Ui.texte(this, "", 14, Ui.TXT, false);
-        Ui.ajouter(root, tvEtat, 14);
+        tvEtat = texte("", 14, false);
+        tvEtat.setTextColor(C_TXT2);
+        contenu.addView(tvEtat, lp(-1, -2, 0, 0, 0, 10));
 
         resultats = new LinearLayout(this);
         resultats.setOrientation(LinearLayout.VERTICAL);
-        Ui.ajouter(root, resultats, 6);
+        contenu.addView(resultats, lp(-1, -2, 0, 0, 0, 0));
 
-        // Navigateur intégré (visible seulement pendant la recherche de la vidéo)
+        // Panneau de secours (page Facebook ouverte quand l'analyse directe ne trouve rien)
         panneauWeb = new LinearLayout(this);
         panneauWeb.setOrientation(LinearLayout.VERTICAL);
-        panneauWeb.setBackground(Ui.rond(Ui.CARD, 14, this));
-        int q = Ui.dp(this, 8);
-        panneauWeb.setPadding(q, q, q, q);
-        panneauWeb.addView(Ui.texte(this,
-                "Ouverture de la page Facebook… Si la vidéo ne démarre pas toute seule, appuyez sur ▶ dans la page.",
-                12, Ui.TXT2, false));
-        Button bFermer = Ui.bouton(this, "✖ Annuler", Ui.CARD);
-        bFermer.setOnClickListener(v -> annulerWeb());
-        panneauWeb.addView(bFermer, Ui.lp(this, -1, -2, 0f, 6, 0));
         panneauWeb.setVisibility(View.GONE);
-        Ui.ajouter(root, panneauWeb, 10);
+        TextView aide = texte("Lecture de la page Facebook… Si la vidéo ne démarre pas toute seule, "
+                + "appuyez sur ▶ dans la page.", 12, false);
+        aide.setTextColor(C_TXT2);
+        panneauWeb.addView(aide, lp(-1, -2, 0, 0, 0, 6));
+        Button bFermerWeb = bouton("✕ Arrêter la recherche", C_CARD);
+        bFermerWeb.setOnClickListener(v -> annulerWeb());
+        panneauWeb.addView(bFermerWeb, lp(-1, -2, 0, 0, 0, 6));
+        contenu.addView(panneauWeb, lp(-1, -2, 0, 8, 0, 0));
 
-        ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Ui.BG);
-        sv.addView(root);
-        setContentView(sv);
+        racine.addView(sv, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        // Lien reçu par « Partager » depuis l'application Facebook
-        Intent in = getIntent();
-        if (Intent.ACTION_SEND.equals(in.getAction())) {
-            String t = in.getStringExtra(Intent.EXTRA_TEXT);
-            if (t != null) {
-                Matcher m = Pattern.compile("https?://\\S+").matcher(t);
-                if (m.find()) {
-                    etLien.setText(m.group());
-                    analyser();
-                }
-            }
-        }
+        // --- Barre de progression, fixée en bas de l'écran ---
+        barre = new LinearLayout(this);
+        barre.setOrientation(LinearLayout.VERTICAL);
+        barre.setPadding(dp(16), dp(12), dp(16), dp(12));
+        barre.setBackground(rond(C_CARD, 0, 0, 0));
+        barre.setVisibility(View.GONE);
+
+        tvDlTitre = texte("", 16, true);
+        barre.addView(tvDlTitre, lp(-1, -2, 0, 0, 0, 8));
+
+        pb = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pb.setMax(1000);
+        pb.setProgressTintList(ColorStateList.valueOf(C_ACCENT));
+        pb.setIndeterminateTintList(ColorStateList.valueOf(C_ACCENT));
+        barre.addView(pb, new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(10)));
+
+        tvDlInfo = texte("", 13, false);
+        tvDlInfo.setTextColor(C_TXT2);
+        barre.addView(tvDlInfo, lp(-1, -2, 0, 8, 0, 8));
+
+        bAnnuler = bouton("Annuler", C_VIOLET);
+        bAnnuler.setOnClickListener(v -> {
+            annule = true;
+            bAnnuler.setText("Annulation…");
+        });
+        bOk = bouton("OK", C_ACCENT);
+        bOk.setOnClickListener(v -> barreCacher());
+        barre.addView(bAnnuler, lp(-1, -2, 0, 0, 0, 0));
+        barre.addView(bOk, lp(-1, -2, 0, 0, 0, 0));
+
+        racine.addView(barre, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        setContentView(racine);
     }
 
-    void coller() {
+    private int dp(int v) {
+        return (int) (v * getResources().getDisplayMetrics().density + 0.5f);
+    }
+
+    private LinearLayout.LayoutParams lp(int w, int hh, int l, int t, int r, int b) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, hh);
+        p.setMargins(dp(l), dp(t), dp(r), dp(b));
+        return p;
+    }
+
+    private GradientDrawable rond(int couleur, int rayon, int traitEpaisseur, int traitCouleur) {
+        GradientDrawable g = new GradientDrawable();
+        g.setColor(couleur);
+        g.setCornerRadius(dp(rayon));
+        if (traitEpaisseur > 0) g.setStroke(dp(traitEpaisseur), traitCouleur);
+        return g;
+    }
+
+    private TextView texte(String s, int sp, boolean gras) {
+        TextView t = new TextView(this);
+        t.setText(s);
+        t.setTextColor(Color.WHITE);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        if (gras) t.setTypeface(Typeface.DEFAULT_BOLD);
+        return t;
+    }
+
+    private Button bouton(String s, int couleur) {
+        Button b = new Button(this);
+        b.setText(s);
+        b.setAllCaps(false);
+        b.setTextColor(Color.WHITE);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setBackground(rond(couleur, 14, 0, 0));
+        b.setPadding(dp(14), dp(10), dp(14), dp(10));
+        return b;
+    }
+
+    private void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+    }
+
+    // =====================================================================
+    //  Lien : coller, analyser
+    // =====================================================================
+
+    private String premierLien(String t) {
+        if (t == null) return null;
+        Matcher m = LIEN.matcher(t);
+        if (!m.find()) return null;
+        String u = m.group();
+        while (u.length() > 0 && ".,;)»\"'".indexOf(u.charAt(u.length() - 1)) >= 0) {
+            u = u.substring(0, u.length() - 1);
+        }
+        return u;
+    }
+
+    private void coller() {
         ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
-        if (cm != null && cm.hasPrimaryClip() && cm.getPrimaryClip() != null
-                && cm.getPrimaryClip().getItemCount() > 0) {
-            CharSequence t = cm.getPrimaryClip().getItemAt(0).getText();
-            if (t != null) {
-                // « Titre de la vidéo https://… » : on garde seulement le lien
-                Matcher m = Pattern.compile("https?://\\S+").matcher(t);
-                etLien.setText(m.find() ? m.group() : t.toString().trim());
-                analyser();   // le lien est analysé tout de suite : les formats s'affichent sans taper sur Analyser
-                return;
-            }
+        if (cm == null || !cm.hasPrimaryClip()) {
+            toast("Rien à coller : copiez d'abord le lien de la vidéo");
+            return;
         }
-        Toast.makeText(this, "Rien à coller : copiez d'abord le lien de la vidéo", Toast.LENGTH_SHORT).show();
+        ClipData cd = cm.getPrimaryClip();
+        if (cd == null || cd.getItemCount() == 0) {
+            toast("Rien à coller : copiez d'abord le lien de la vidéo");
+            return;
+        }
+        CharSequence cs = cd.getItemAt(0).coerceToText(this);
+        String u = premierLien(cs == null ? null : cs.toString());
+        if (u == null) {
+            toast("Rien à coller : copiez d'abord le lien de la vidéo");
+            return;
+        }
+        etLien.setText(u);
+        analyser();
     }
 
-    // ---------- Analyse ----------
-
-    void analyser() {
-        String lien = etLien.getText().toString().trim();
-        if (lien.isEmpty()) {
-            Toast.makeText(this, "Collez d'abord un lien", Toast.LENGTH_SHORT).show();
+    private void analyser() {
+        if (enCours) {
+            toast("Un téléchargement est en cours");
             return;
         }
-        if (!lien.startsWith("http")) lien = "https://" + lien;
-        if (!(lien.contains("facebook.com") || lien.contains("fb.watch") || lien.contains("fb.com"))) {
-            Toast.makeText(this, "Ce n'est pas un lien Facebook", Toast.LENGTH_SHORT).show();
+        String saisie = etLien.getText().toString().trim();
+        if (saisie.isEmpty()) {
+            toast("Collez d'abord un lien");
             return;
         }
-        final String adresse = lien;
-        final int gen = ++generation;
+        String l = premierLien(saisie);
+        if (l == null) l = saisie.startsWith("http") ? saisie : "https://" + saisie;
+        String bas = l.toLowerCase(Locale.ROOT);
+        if (!(bas.contains("facebook.com") || bas.contains("fb.watch") || bas.contains("fb.com"))) {
+            toast("Ce n'est pas un lien Facebook");
+            return;
+        }
+        final String lien = l;
+        final int g = ++generation;
         nettoyerWeb();
         resultats.removeAllViews();
+        barreCacher();
         tvEtat.setText("Analyse du lien…");
         new Thread(() -> {
-            String sd = null, hd = null;
-            String[][] essais = {
-                    {adresse, UA_PC},
-                    {adresse, UA_BOT},
-                    {versMobile(adresse), UA_TEL}
-            };
-            for (String[] essai : essais) {
-                try {
-                    String[] r = extraire(lirePage(essai[0], essai[1]));
-                    if (r[0] != null || r[1] != null) { sd = r[0]; hd = r[1]; break; }
-                } catch (Exception ignored) {}
-            }
-            final String fSd = sd, fHd = hd;
-            runOnUiThread(() -> {
-                if (gen != generation) return;
-                if (fSd != null || fHd != null) afficher(fSd, fHd, null, null, null);
-                else lancerWeb(adresse, gen);
+            final Res r = analyserPage(lien);
+            h.post(() -> {
+                if (g != generation) return;
+                if (r.sd != null || r.hd != null) afficher(r);
+                else lancerWeb(lien, g);
             });
         }).start();
     }
 
-    static String versMobile(String adresse) {
-        return adresse.replaceFirst("^https?://(www\\.)?facebook\\.com", "https://m.facebook.com");
+    // =====================================================================
+    //  Analyse de la page : on essaie plusieurs « identités » (UA)
+    // =====================================================================
+
+    private Res analyserPage(String lien) {
+        Res r = new Res();
+        String mobile = versMobile(lien);
+        String[][] essais = {
+                {lien, UA_PC},
+                {lien, UA_BOT},
+                {mobile, UA_TEL},
+                {mobile, UA_PC}
+        };
+        for (String[] e : essais) {
+            try {
+                String html = lirePage(e[0], e[1]);
+                extraire(html, e[1], r);
+                if (r.sd != null && r.hd != null) break;
+            } catch (Exception ignore) {
+                // on passe à l'essai suivant
+            }
+        }
+        return r;
     }
 
-    /** Lit une page en suivant les redirections à la main (liens « share », fb.watch…). */
-    static String lirePage(String adresse, String ua) throws Exception {
-        String u = adresse;
-        for (int k = 0; k < 8; k++) {
-            HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+    private String versMobile(String lien) {
+        return lien.replaceFirst("^https?://(www\\.)?facebook\\.com", "https://m.facebook.com");
+    }
+
+    /**
+     * Lit la page en suivant les redirections HTTP (3xx) ET les redirections JavaScript :
+     * Facebook répond parfois par une mini-page (~300 octets) qui contient seulement
+     * location.href = "...". Sans la suivre, on ne trouve aucun lien de vidéo.
+     */
+    private String lirePage(String adresse, String ua) throws Exception {
+        String courant = adresse;
+        for (int i = 0; i < 8; i++) {
+            HttpURLConnection c = (HttpURLConnection) new URL(courant).openConnection();
             c.setInstanceFollowRedirects(false);
             c.setRequestProperty("User-Agent", ua);
             c.setRequestProperty("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8");
@@ -223,357 +483,528 @@ public class FacebookActivity extends Activity {
                 String loc = c.getHeaderField("Location");
                 c.disconnect();
                 if (loc == null) throw new Exception("redirection vide");
-                u = new URL(new URL(u), loc).toString();
+                courant = new URL(new URL(courant), loc).toString();
                 continue;
             }
             InputStream in = code >= 400 ? c.getErrorStream() : c.getInputStream();
-            if (in == null) throw new Exception("http " + code);
-            BufferedReader r = new BufferedReader(new InputStreamReader(in, "UTF-8"));
+            if (in == null) {
+                c.disconnect();
+                throw new Exception("http " + code);
+            }
             StringBuilder sb = new StringBuilder();
+            BufferedReader br = new BufferedReader(new InputStreamReader(in, "UTF-8"));
             char[] buf = new char[8192];
             int n;
-            while ((n = r.read(buf)) > 0 && sb.length() < 6000000) sb.append(buf, 0, n);
-            r.close();
+            while ((n = br.read(buf)) > 0 && sb.length() < 6000000) sb.append(buf, 0, n);
+            br.close();
             c.disconnect();
-            return sb.toString();
+            String page = sb.toString();
+            if (page.length() < 4000) {
+                Matcher m = SAUT_JS.matcher(page);
+                if (m.find()) {
+                    courant = new URL(new URL(courant), decoder(m.group(1))).toString();
+                    continue;
+                }
+            }
+            return page;
         }
         throw new Exception("trop de redirections");
     }
 
-    /** Cherche dans le texte d'une page les liens {SD, HD} d'une vidéo avec son. */
-    static String[] extraire(String html) {
-        String sd = chercher(html, CLES_SD), hd = chercher(html, CLES_HD);
+    private void extraire(String html, String ua, Res r) {
+        if (html == null) return;
+        String sd = premier(html, CLES_SD);
+        String hd = premier(html, CLES_HD);
         if (sd == null || hd == null) {
-            Matcher m = Pattern.compile("\"progressive_url\"\\s*:\\s*\"(https?:[^\"]+)\"(.{0,300}?)\"quality\"\\s*:\\s*\"(\\w+)\"",
-                    Pattern.DOTALL).matcher(html);
+            Matcher m = PROG.matcher(html);
             while (m.find()) {
                 String u = decoder(m.group(1));
-                if ("HD".equalsIgnoreCase(m.group(3))) { if (hd == null) hd = u; }
-                else if (sd == null) sd = u;
-            }
-        }
-        if (sd == null && hd == null) {
-            Matcher mt = Pattern.compile("<meta[^>]+>").matcher(html);
-            Pattern pc = Pattern.compile("content=\"([^\"]+)\"");
-            while (mt.find()) {
-                String tag = mt.group();
-                if (!tag.contains("og:video")) continue;
-                Matcher c = pc.matcher(tag);
-                if (c.find()) {
-                    String u = decoder(c.group(1));
-                    if (u.startsWith("http") && (u.contains(".mp4") || u.contains("fbcdn"))) { sd = u; break; }
+                if ("HD".equalsIgnoreCase(m.group(3))) {
+                    if (hd == null) hd = u;
+                } else {
+                    if (sd == null) sd = u;
                 }
             }
         }
-        return new String[]{sd, hd};
+        if (sd == null && hd == null) {
+            Matcher mt = META.matcher(html);
+            while (mt.find()) {
+                String tag = mt.group();
+                if (!tag.contains("og:video")) continue;
+                Matcher mc = CONTENT.matcher(tag);
+                if (!mc.find()) continue;
+                String u = decoder(mc.group(1));
+                if (u.startsWith("http") && (u.contains(".mp4") || u.contains("fbcdn"))) {
+                    sd = u;
+                    break;
+                }
+            }
+        }
+        if (r.sd == null && sd != null) {
+            r.sd = sd;
+            r.uaSd = ua;
+        }
+        if (r.hd == null && hd != null) {
+            r.hd = hd;
+            r.uaHd = ua;
+        }
     }
 
-    static String chercher(String html, String[] cles) {
+    private String premier(String html, String[] cles) {
         for (String cle : cles) {
-            Matcher m = Pattern.compile("\"" + cle + "\"\\s*:\\s*\"(https?:[^\"]+)\"").matcher(html);
+            Pattern p = Pattern.compile("\"" + Pattern.quote(cle) + "\"\\s*:\\s*\"(https?:[^\"]+)\"");
+            Matcher m = p.matcher(html);
             if (m.find()) return decoder(m.group(1));
         }
         return null;
     }
 
-    static String decoder(String s) {
-        Matcher mu = Pattern.compile("\\\\u([0-9a-fA-F]{4})").matcher(s);
+    private String decoder(String s) {
+        Matcher m = Pattern.compile("\\\\u([0-9a-fA-F]{4})").matcher(s);
         StringBuffer sb = new StringBuffer();
-        while (mu.find())
-            mu.appendReplacement(sb, Matcher.quoteReplacement(
-                    String.valueOf((char) Integer.parseInt(mu.group(1), 16))));
-        mu.appendTail(sb);
+        while (m.find()) {
+            String c = String.valueOf((char) Integer.parseInt(m.group(1), 16));
+            m.appendReplacement(sb, Matcher.quoteReplacement(c));
+        }
+        m.appendTail(sb);
         return sb.toString().replace("\\/", "/").replace("&amp;", "&");
     }
 
-    // ---------- Navigateur intégré ----------
+    // =====================================================================
+    //  Secours : page ouverte dans une WebView, on repère les flux vidéo
+    // =====================================================================
 
-    void lancerWeb(final String adresse, final int gen) {
+    private void lancerWeb(final String lien, final int g) {
         nettoyerWeb();
-        synchronized (captures) { captures.clear(); }
+        captures.clear();
         tvEtat.setText("Lecture de la page Facebook…");
-        try {
-            web = new WebView(this);
-            WebSettings s = web.getSettings();
-            s.setJavaScriptEnabled(true);
-            s.setDomStorageEnabled(true);
-            s.setMediaPlaybackRequiresUserGesture(false);
-            s.setUserAgentString(UA_PC);
-            s.setUseWideViewPort(true);
-            s.setLoadWithOverviewMode(true);
-            android.webkit.CookieManager cm = android.webkit.CookieManager.getInstance();
-            cm.setAcceptCookie(true);
-            cm.setAcceptThirdPartyCookies(web, true);
-            web.setBackgroundColor(Ui.BG);
-            web.setOnTouchListener((v, ev) -> {
-                v.getParent().requestDisallowInterceptTouchEvent(true);
-                return false;
-            });
-            web.setWebViewClient(new WebViewClient() {
-                @Override
-                public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
-                    noterRequete(r.getUrl().toString());
-                    return null;
-                }
+        web = new WebView(this);
+        WebSettings s = web.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true);
+        s.setMediaPlaybackRequiresUserGesture(false);
+        s.setUserAgentString(UA_PC);
+        s.setUseWideViewPort(true);
+        s.setLoadWithOverviewMode(true);
+        CookieManager cm = CookieManager.getInstance();
+        cm.setAcceptCookie(true);
+        cm.setAcceptThirdPartyCookies(web, true);
+        web.setBackgroundColor(C_BG);
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest rq) {
+                noterRequete(rq.getUrl().toString());
+                return null;
+            }
+        });
+        panneauWeb.addView(web, 0, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(320)));
+        panneauWeb.setVisibility(View.VISIBLE);
+        web.loadUrl(lien);
+        h.postDelayed(() -> sonder(g, 0), 2500);
+    }
 
-                @Override
-                public boolean shouldOverrideUrlLoading(WebView v, WebResourceRequest r) {
-                    String sch = r.getUrl().getScheme();
-                    return sch == null || !(sch.equals("http") || sch.equals("https"));   // bloque fb://, intent://
+    private void sonder(final int g, final int essai) {
+        if (g != generation || web == null) return;
+        String js = "(function(){try{var v=document.querySelector('video');if(v){v.muted=true;"
+                + "var p=v.play();if(p&&p.catch)p.catch(function(){});}}catch(e){}"
+                + "return document.documentElement.outerHTML;})()";
+        web.evaluateJavascript(js, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String valeur) {
+                if (g != generation || web == null) return;
+                Res r = new Res();
+                String html = depuisJson(valeur);
+                if (html != null) extraire(html, UA_PC, r);
+                capturesVersRes(r);
+                if (r.sd != null || r.hd != null || r.dashV != null) {
+                    afficher(r);
+                    return;
                 }
-            });
-            panneauWeb.addView(web, 1, new LinearLayout.LayoutParams(-1, Ui.dp(this, 320)));
-            panneauWeb.setVisibility(View.VISIBLE);
-            web.loadUrl(adresse);
-            h.postDelayed(() -> sonder(gen, 0), 3000);
+                if (essai >= 20) {
+                    nettoyerWeb();
+                    tvEtat.setText("⚠ Aucun lien de téléchargement trouvé, même après avoir ouvert la page. "
+                            + "La vidéo est peut-être privée, Facebook demande une connexion, ou la page a changé.");
+                    return;
+                }
+                h.postDelayed(() -> sonder(g, essai + 1), 1500);
+            }
+        });
+    }
+
+    private String depuisJson(String valeur) {
+        if (valeur == null || valeur.equals("null")) return null;
+        try {
+            Object o = new JSONTokener(valeur).nextValue();
+            return o instanceof String ? (String) o : null;
         } catch (Exception e) {
-            afficher(null, null, null, null, null);
+            return null;
         }
     }
 
-    /** Appelé pour chaque requête de la page : on retient les fichiers vidéo de Facebook. */
-    void noterRequete(String url) {
+    /** Appelé sur un thread de la WebView : on garde les fichiers vidéo/audio de fbcdn. */
+    private void noterRequete(String url) {
         String bas = url.toLowerCase(Locale.ROOT);
         if (!bas.contains("fbcdn") || !bas.contains(".mp4")) return;
+        boolean morceau = bas.contains("bytestart=");
         String propre = nettoyer(url);
-        synchronized (captures) {
-            for (String[] c : captures) if (c[0].equals(propre)) return;
-            captures.add(new String[]{propre, etiquette(url), bas.contains("bytestart=") ? "r" : ""});
+        for (String[] c : captures) {
+            if (c[0].equals(propre)) return;
         }
+        captures.add(new String[]{propre, etiquette(url), morceau ? "1" : "0"});
     }
 
-    /** Enlève les paramètres bytestart/byteend : on obtient alors le fichier entier. */
-    static String nettoyer(String url) {
+    private String nettoyer(String url) {
         int q = url.indexOf('?');
         if (q < 0) return url;
         StringBuilder sb = new StringBuilder(url.substring(0, q));
-        String sep = "?";
-        for (String p : url.substring(q + 1).split("&")) {
+        String[] ps = url.substring(q + 1).split("&");
+        boolean premier = true;
+        for (String p : ps) {
             if (p.startsWith("bytestart=") || p.startsWith("byteend=")) continue;
-            sb.append(sep).append(p);
-            sep = "&";
+            sb.append(premier ? '?' : '&').append(p);
+            premier = false;
         }
         return sb.toString();
     }
 
-    /** Lit l'étiquette « vencode_tag » cachée dans le paramètre efg (audio, dash…, progressive…). */
-    static String etiquette(String url) {
+    private String etiquette(String url) {
         try {
-            Matcher m = Pattern.compile("[?&]efg=([^&]+)").matcher(url);
+            Matcher m = EFG.matcher(url);
             if (!m.find()) return "";
-            String b = URLDecoder.decode(m.group(1), "UTF-8").replace('-', '+').replace('_', '/');
-            while (b.length() % 4 != 0) b += "=";
-            String j = new String(Base64.decode(b, Base64.DEFAULT), "UTF-8");
-            Matcher t = Pattern.compile("\"vencode_tag\"\\s*:\\s*\"([^\"]*)\"").matcher(j);
+            String b = URLDecoder.decode(m.group(1), "UTF-8");
+            byte[] raw = Base64.decode(b, Base64.URL_SAFE | Base64.NO_PADDING | Base64.NO_WRAP);
+            Matcher t = TAG.matcher(new String(raw, StandardCharsets.UTF_8));
             return t.find() ? t.group(1).toLowerCase(Locale.ROOT) : "";
         } catch (Exception e) {
             return "";
         }
     }
 
-    void sonder(final int gen, final int n) {
-        if (gen != generation || web == null) return;
-        String js = "(function(){try{var v=document.querySelector('video');"
-                + "if(v){v.muted=true;var p=v.play();if(p&&p.catch)p.catch(function(){});}}catch(e){}"
-                + "return document.documentElement.outerHTML;})()";
-        web.evaluateJavascript(js, valeur -> {
-            if (gen != generation || web == null) return;
-            String html = null;
-            try {
-                Object o = new JSONTokener(valeur).nextValue();
-                if (o instanceof String) html = (String) o;
-            } catch (Exception ignored) {}
-            String[] r = html == null ? new String[]{null, null} : extraire(html);
-            if (r[0] != null || r[1] != null) {
-                afficher(r[0], r[1], null, null, null);
-                return;
-            }
-            String[] cap = meilleuresCaptures();      // {complet, video seule, audio, inconnu}
-            boolean dernier = n >= 14;
-            if (cap[0] != null) {
-                afficher(cap[0], null, null, null, null);
-            } else if (cap[1] != null && cap[2] != null) {
-                afficher(null, null, cap[1], cap[2], null);
-            } else if (dernier) {
-                afficher(null, null, cap[1], null, cap[3]);
+    private void capturesVersRes(Res r) {
+        int meilleureV = -1;
+        for (String[] c : captures) {
+            String tag = c[1];
+            boolean audio = tag.contains("audio");
+            boolean separe = tag.contains("dash") || "1".equals(c[2]);
+            Matcher m = HAUTEUR.matcher(tag);
+            int haut = m.find() ? Integer.parseInt(m.group(1)) : 0;
+            if (audio) {
+                if (r.dashA == null) r.dashA = c[0];
+            } else if (separe) {
+                if (haut > meilleureV) {
+                    meilleureV = haut;
+                    r.dashV = c[0];
+                }
+            } else if (haut >= 720) {
+                if (r.hd == null) {
+                    r.hd = c[0];
+                    r.uaHd = UA_PC;
+                }
             } else {
-                tvEtat.setText("Lecture de la page Facebook… (" + (n + 1) + ")");
-                h.postDelayed(() -> sonder(gen, n + 1), 2000);
-            }
-        });
-    }
-
-    String[] meilleuresCaptures() {
-        String complet = null, video = null, audio = null, inconnu = null;
-        int meilleureHauteur = -1;
-        Pattern ph = Pattern.compile("(\\d{3,4})p");
-        synchronized (captures) {
-            for (String[] c : captures) {
-                String tag = c[1];
-                if (tag.contains("audio")) {
-                    if (audio == null) audio = c[0];
-                } else if (tag.contains("dash")) {
-                    Matcher m = ph.matcher(tag);
-                    int hauteur = m.find() ? Integer.parseInt(m.group(1)) : 0;
-                    if (video == null || hauteur > meilleureHauteur) { video = c[0]; meilleureHauteur = hauteur; }
-                } else if (tag.isEmpty() && c[2].equals("r")) {
-                    if (inconnu == null) inconnu = c[0];          // segment dont on ne sait pas si c'est l'image ou le son
-                } else {
-                    if (complet == null) complet = c[0];
+                if (r.sd == null) {
+                    r.sd = c[0];
+                    r.uaSd = UA_PC;
                 }
             }
         }
-        return new String[]{complet, video, audio, inconnu};
+        if (r.dashV != null) r.uaDash = UA_PC;
     }
 
-    void annulerWeb() {
-        generation++;
-        nettoyerWeb();
-        tvEtat.setText("Recherche annulée.");
-    }
-
-    void nettoyerWeb() {
-        h.removeCallbacksAndMessages(null);
+    private void nettoyerWeb() {
         if (web != null) {
-            try {
-                web.stopLoading();
-                web.loadUrl("about:blank");
-                panneauWeb.removeView(web);
-                web.destroy();
-            } catch (Exception ignored) {}
+            panneauWeb.removeView(web);
+            web.stopLoading();
+            web.destroy();
             web = null;
         }
         panneauWeb.setVisibility(View.GONE);
     }
 
-    @Override
-    public void onBackPressed() {
-        if (panneauWeb.getVisibility() == View.VISIBLE) annulerWeb();
-        else super.onBackPressed();
-    }
-
-    @Override
-    protected void onDestroy() {
+    private void annulerWeb() {
         generation++;
         nettoyerWeb();
-        super.onDestroy();
+        tvEtat.setText("Recherche annulée.");
     }
 
-    // ---------- Résultats ----------
+    // =====================================================================
+    //  Choix du format : 2 cartes, puis confirmation, puis téléchargement
+    // =====================================================================
 
-    void afficher(String sd, String hd, String video, String audio, String essai) {
+    private void afficher(Res r) {
         nettoyerWeb();
         resultats.removeAllViews();
-        if (sd != null || hd != null) {
-            tvEtat.setText("✅ Vidéo trouvée. Choisissez la qualité :");
-            if (sd != null) {
-                Button b1 = Ui.bouton(this, "⬇ Qualité standard (SD, environ 360p)", Ui.ACCENT);
-                final String u = sd;
-                b1.setOnClickListener(v -> telecharger(u, "sd"));
-                Ui.ajouter(resultats, b1, 8);
+        if (r.sd != null || r.hd != null) {
+            tvEtat.setText("✅ Vidéo trouvée. Choisissez le format :");
+            final Plan psd = r.sd != null ? new Plan("sd", r.sd, null, r.uaSd) : null;
+            final Plan phd = r.hd != null ? new Plan("hd", r.hd, null, r.uaHd) : null;
+            carte("Standard (SD)",
+                    psd != null ? "Environ 360p · fichier plus léger" : "Non disponible pour cette vidéo",
+                    psd != null, C_ACCENT,
+                    v -> confirmer("SD (qualité standard, environ 360p)", psd));
+            carte("Haute qualité (HD)",
+                    phd != null ? "Meilleure image · fichier plus lourd" : "Non disponible pour cette vidéo",
+                    phd != null, C_VIOLET,
+                    v -> confirmer("HD (haute qualité)", phd));
+        } else if (r.dashV != null) {
+            final Plan pd = new Plan("hd", r.dashV, r.dashA, r.uaDash);
+            if (r.dashA != null) {
+                tvEtat.setText("✅ Vidéo trouvée (image et son séparés : ils seront rassemblés dans un seul fichier).");
+                carte("Meilleure qualité avec le son", "Image et son rassemblés dans un seul fichier",
+                        true, C_ACCENT, v -> confirmer("meilleure qualité (avec le son)", pd));
+            } else {
+                tvEtat.setText("⚠ Vidéo trouvée, mais Facebook n'a pas donné le son : elle sera sans son.");
+                carte("Meilleure qualité (sans son)", "Le son n'a pas été trouvé",
+                        true, C_ACCENT, v -> confirmer("meilleure qualité (sans son)", pd));
             }
-            if (hd != null && !hd.equals(sd)) {
-                Button b2 = Ui.bouton(this, "⬇ Haute qualité (HD)", Ui.VIOLET);
-                final String u = hd;
-                b2.setOnClickListener(v -> telecharger(u, "hd"));
-                Ui.ajouter(resultats, b2, 8);
-            }
-        } else if (video != null && audio != null) {
-            tvEtat.setText("✅ Vidéo trouvée (image et son séparés : ils seront rassemblés dans un seul fichier).");
-            Button b = Ui.bouton(this, "⬇ Télécharger la vidéo avec le son", Ui.ACCENT);
-            b.setOnClickListener(v -> fusionner(video, audio));
-            Ui.ajouter(resultats, b, 8);
-        } else if (video != null) {
-            tvEtat.setText("⚠ Vidéo trouvée, mais Facebook n'a pas donné le son : elle sera sans son.");
-            Button b = Ui.bouton(this, "⬇ Télécharger (sans son)", Ui.VIOLET);
-            b.setOnClickListener(v -> telecharger(video, "sanson"));
-            Ui.ajouter(resultats, b, 8);
-        } else if (essai != null) {
-            tvEtat.setText("⚠ Un fichier a été trouvé, mais je ne peux pas garantir qu'il contient l'image et le son.");
-            Button b = Ui.bouton(this, "⬇ Essayer ce fichier", Ui.VIOLET);
-            b.setOnClickListener(v -> telecharger(essai, "essai"));
-            Ui.ajouter(resultats, b, 8);
         } else {
-            tvEtat.setText("⚠ Aucun lien de téléchargement trouvé, même après avoir ouvert la page. "
-                    + "La vidéo est peut-être privée, Facebook demande une connexion, ou la page a changé.");
+            tvEtat.setText("⚠ Aucun lien de téléchargement trouvé. La vidéo est peut-être privée, "
+                    + "Facebook demande une connexion, ou la page a changé.");
         }
     }
 
-    void telecharger(String url, String qualite) {
+    private void carte(String titre, String sous, boolean dispo, int couleurBord, View.OnClickListener l) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setPadding(dp(16), dp(14), dp(16), dp(14));
+        c.setBackground(rond(C_CARD, 16, 2, couleurBord));
+        TextView t = texte((dispo ? "⬇ " : "") + titre, 17, true);
+        TextView s = texte(sous, 13, false);
+        s.setTextColor(C_TXT2);
+        c.addView(t, lp(-1, -2, 0, 0, 0, 2));
+        c.addView(s, lp(-1, -2, 0, 0, 0, 0));
+        if (dispo) {
+            c.setOnClickListener(l);
+        } else {
+            c.setAlpha(0.45f);
+        }
+        resultats.addView(c, lp(-1, -2, 0, 0, 0, 10));
+    }
+
+    private void confirmer(String format, final Plan p) {
+        if (p == null) return;
+        new AlertDialog.Builder(this)
+                .setTitle("Télécharger la vidéo")
+                .setMessage("Voulez-vous télécharger cette vidéo au format " + format + " ?\n\n"
+                        + "Elle sera enregistrée dans « Mes vidéos & audios ».")
+                .setPositiveButton("Télécharger", (d, w) -> telecharger(p))
+                .setNegativeButton("Annuler", null)
+                .show();
+    }
+
+    // =====================================================================
+    //  Téléchargement avec progression (barre en bas de l'écran)
+    // =====================================================================
+
+    private void telecharger(final Plan p) {
+        if (enCours) {
+            toast("Un téléchargement est déjà en cours");
+            return;
+        }
+        enCours = true;
+        annule = false;
+        etape = "";
+        barreDebut("Téléchargement " + p.nom.toUpperCase(Locale.ROOT), "Connexion…");
+        threadDl = new Thread(() -> executer(p));
+        threadDl.start();
+    }
+
+    private void executer(Plan p) {
+        File dir = getExternalFilesDir(Environment.DIRECTORY_MOVIES);
+        if (dir == null) dir = getFilesDir();
+        dir.mkdirs();
+        final String nom = "facebook_" + p.nom + "_" + System.currentTimeMillis() + ".mp4";
+        final File finale = new File(dir, nom);
+        final File part = new File(dir, nom + ".part");
+        final File tv = new File(getCacheDir(), "fb_image.mp4");
+        final File ta = new File(getCacheDir(), "fb_son.mp4");
         try {
-            String nom = "facebook_" + qualite + "_" + System.currentTimeMillis() + ".mp4";
-            DownloadManager.Request r = new DownloadManager.Request(Uri.parse(url));
-            r.addRequestHeader("User-Agent", UA_PC);
-            r.addRequestHeader("Referer", "https://www.facebook.com/");
-            r.setTitle(nom);
-            r.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-            r.setDestinationInExternalFilesDir(this, Environment.DIRECTORY_MOVIES, nom);
-            ((DownloadManager) getSystemService(DOWNLOAD_SERVICE)).enqueue(r);
-            Toast.makeText(this, "Téléchargement lancé. Retrouvez-le dans Sans internet → Mes vidéos & audios.",
-                    Toast.LENGTH_LONG).show();
+            if (p.audio == null) {
+                copier(p.url, p.ua, part, 0f, 1f);
+                if (!estVideo(part)) {
+                    throw new Exception("Le fichier reçu n'est pas une vidéo : Facebook a refusé le lien. Réessayez.");
+                }
+                if (!part.renameTo(finale)) throw new Exception("Enregistrement impossible");
+            } else {
+                etape = "Image";
+                copier(p.url, p.ua, tv, 0f, 0.45f);
+                etape = "Son";
+                copier(p.audio, p.ua, ta, 0.45f, 0.9f);
+                etape = "";
+                h.post(() -> {
+                    pb.setIndeterminate(true);
+                    tvDlInfo.setText("Assemblage de l'image et du son…");
+                });
+                muxer(tv, ta, finale);
+            }
+            final long taille = finale.length();
+            h.post(() -> barreFin(true, "✅ Téléchargement terminé",
+                    nom + " · " + mo(taille) + " Mo\nRetrouvez-le dans Sans internet → Mes vidéos & audios."));
         } catch (Exception e) {
-            Toast.makeText(this, "Téléchargement impossible", Toast.LENGTH_SHORT).show();
+            part.delete();
+            if (p.audio != null) finale.delete();
+            final boolean a = annule;
+            final String msg = e.getMessage() == null ? "erreur inconnue" : e.getMessage();
+            h.post(() -> {
+                if (a) {
+                    enCours = false;
+                    barreCacher();
+                } else {
+                    barreFin(false, "⚠ Téléchargement impossible", msg);
+                }
+            });
+        } finally {
+            tv.delete();
+            ta.delete();
         }
     }
 
-    // ---------- Image + son séparés : téléchargement puis fusion ----------
-
-    void fusionner(final String uVideo, final String uAudio) {
-        tvEtat.setText("Téléchargement de l'image…");
-        new Thread(() -> {
-            File fv = new File(getCacheDir(), "fb_image.mp4");
-            File fa = new File(getCacheDir(), "fb_son.mp4");
-            File sortie = null;
+    /** Essaie plusieurs identités (UA) : un lien signé pour l'une est parfois refusé pour l'autre. */
+    private void copier(String adresse, String ua, File dest, float debut, float fin) throws Exception {
+        List<String> uas = new ArrayList<>();
+        uas.add(ua);
+        for (String u : new String[]{UA_PC, UA_BOT, UA_TEL}) {
+            if (!uas.contains(u)) uas.add(u);
+        }
+        Exception derniere = null;
+        for (String u : uas) {
+            if (annule) throw new Exception("annulé");
             try {
-                copierUrl(uVideo, fv, "Téléchargement de l'image");
-                copierUrl(uAudio, fa, "Téléchargement du son");
-                runOnUiThread(() -> tvEtat.setText("Assemblage de l'image et du son…"));
-                File dossier = getExternalFilesDir(Environment.DIRECTORY_MOVIES);
-                if (dossier != null) dossier.mkdirs();
-                sortie = new File(dossier, "facebook_" + System.currentTimeMillis() + ".mp4");
-                muxer(fv, fa, sortie);
-                runOnUiThread(() -> tvEtat.setText(
-                        "✅ Vidéo enregistrée. Retrouvez-la dans Sans internet → Mes vidéos & audios."));
+                copierUnique(adresse, u, dest, debut, fin);
+                return;
             } catch (Exception e) {
-                if (sortie != null) sortie.delete();
-                final String msg = e.getMessage() == null ? "erreur" : e.getMessage();
-                runOnUiThread(() -> tvEtat.setText("⚠ Téléchargement impossible (" + msg + ")."));
-            } finally {
-                fv.delete();
-                fa.delete();
+                if (annule) throw e;
+                derniere = e;
             }
-        }).start();
+        }
+        throw derniere != null ? derniere : new Exception("échec du téléchargement");
     }
 
-    void copierUrl(String adresse, File fichier, String libelle) throws Exception {
+    private void copierUnique(String adresse, String ua, File dest, float debut, float fin) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(adresse).openConnection();
-        c.setRequestProperty("User-Agent", UA_PC);
-        c.setRequestProperty("Referer", "https://www.facebook.com/");
-        c.setConnectTimeout(15000);
-        c.setReadTimeout(30000);
-        int code = c.getResponseCode();
-        if (code != 200 && code != 206) throw new Exception("http " + code);
-        long total = 0;
-        long dernier = 0;
-        try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(fichier)) {
-            byte[] buf = new byte[65536];
-            int n;
-            while ((n = in.read(buf)) > 0) {
-                out.write(buf, 0, n);
-                total += n;
-                if (total - dernier > 1000000) {
-                    dernier = total;
-                    final String t = libelle + "… " + (total / 1000000) + " Mo";
-                    runOnUiThread(() -> tvEtat.setText(t));
+        try {
+            c.setRequestProperty("User-Agent", ua);
+            c.setRequestProperty("Referer", "https://www.facebook.com/");
+            c.setRequestProperty("Accept", "*/*");
+            c.setConnectTimeout(15000);
+            c.setReadTimeout(30000);
+            int code = c.getResponseCode();
+            if (code != 200 && code != 206) throw new Exception("http " + code);
+            String type = c.getContentType();
+            if (type != null) {
+                String t = type.toLowerCase(Locale.ROOT);
+                if (t.startsWith("text/") || t.contains("html") || t.contains("json")) {
+                    throw new Exception("Facebook a répondu par une page web au lieu de la vidéo");
                 }
+            }
+            long total = c.getContentLengthLong();
+            InputStream in = c.getInputStream();
+            FileOutputStream out = new FileOutputStream(dest);
+            try {
+                byte[] buf = new byte[65536];
+                long lu = 0;
+                long dernier = 0;
+                boolean premierBloc = true;
+                int n;
+                while ((n = in.read(buf)) > 0) {
+                    if (annule) throw new Exception("annulé");
+                    if (premierBloc) {
+                        premierBloc = false;
+                        if (ressembleHtml(buf, n)) {
+                            throw new Exception("Facebook a répondu par une page web au lieu de la vidéo");
+                        }
+                    }
+                    out.write(buf, 0, n);
+                    lu += n;
+                    long now = System.currentTimeMillis();
+                    if (now - dernier > 200) {
+                        dernier = now;
+                        progresser(lu, total, debut, fin);
+                    }
+                }
+                progresser(lu, total, debut, fin);
+                if (lu == 0) throw new Exception("fichier vide");
+            } finally {
+                out.close();
+                in.close();
             }
         } finally {
             c.disconnect();
         }
-        if (total == 0) throw new Exception("fichier vide");
     }
 
-    static int piste(MediaExtractor ex, String prefixe) {
+    private boolean ressembleHtml(byte[] buf, int n) {
+        String debut = new String(buf, 0, Math.min(n, 256), StandardCharsets.ISO_8859_1).toLowerCase(Locale.ROOT);
+        return debut.contains("<html") || debut.contains("<!doctype") || debut.contains("location.href");
+    }
+
+    private boolean estVideo(File f) {
+        if (f.length() < 20000) return false;
+        try (FileInputStream in = new FileInputStream(f)) {
+            byte[] b = new byte[256];
+            int n = in.read(b);
+            return n > 0 && !ressembleHtml(b, n);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void progresser(final long lu, final long total, final float debut, final float fin) {
+        final String et = etape;
+        h.post(() -> {
+            if (!enCours) return;
+            if (total <= 0) {
+                pb.setIndeterminate(true);
+                tvDlInfo.setText((et.isEmpty() ? "" : et + " · ") + mo(lu) + " Mo téléchargés");
+            } else {
+                float frac = Math.min(1f, (float) lu / total);
+                pb.setIndeterminate(false);
+                pb.setProgress((int) ((debut + (fin - debut) * frac) * 1000));
+                tvDlInfo.setText((et.isEmpty() ? "" : et + " · ") + (int) (frac * 100) + " % · "
+                        + mo(lu) + " / " + mo(total) + " Mo");
+            }
+        });
+    }
+
+    private String mo(long octets) {
+        return String.format(Locale.FRANCE, "%.1f", octets / 1048576.0);
+    }
+
+    // ---------- Assemblage image + son ----------
+
+    private void muxer(File video, File audio, File sortie) throws Exception {
+        MediaExtractor ev = new MediaExtractor();
+        MediaExtractor ea = new MediaExtractor();
+        MediaMuxer mm = null;
+        try {
+            ev.setDataSource(video.getAbsolutePath());
+            ea.setDataSource(audio.getAbsolutePath());
+            int iv = piste(ev, "video/");
+            int ia = piste(ea, "audio/");
+            if (iv < 0 || ia < 0) throw new Exception("image ou son introuvable");
+            ev.selectTrack(iv);
+            ea.selectTrack(ia);
+            mm = new MediaMuxer(sortie.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
+            int tv = mm.addTrack(ev.getTrackFormat(iv));
+            int ta = mm.addTrack(ea.getTrackFormat(ia));
+            mm.start();
+            ecrire(ev, mm, tv);
+            ecrire(ea, mm, ta);
+            mm.stop();
+        } finally {
+            ev.release();
+            ea.release();
+            if (mm != null) {
+                try {
+                    mm.release();
+                } catch (Exception ignore) {
+                    // rien
+                }
+            }
+        }
+    }
+
+    private int piste(MediaExtractor ex, String prefixe) {
         for (int i = 0; i < ex.getTrackCount(); i++) {
             String mime = ex.getTrackFormat(i).getString(MediaFormat.KEY_MIME);
             if (mime != null && mime.startsWith(prefixe)) return i;
@@ -581,56 +1012,47 @@ public class FacebookActivity extends Activity {
         return -1;
     }
 
-    /** Range l'image et le son dans un seul fichier mp4, sans les recompresser. */
-    static void muxer(File video, File audio, File sortie) throws Exception {
-        MediaExtractor ev = new MediaExtractor();
-        MediaExtractor ea = new MediaExtractor();
-        MediaMuxer mux = null;
-        boolean demarre = false;
-        try {
-            ev.setDataSource(video.getAbsolutePath());
-            ea.setDataSource(audio.getAbsolutePath());
-            int tv = piste(ev, "video/");
-            int ta = piste(ea, "audio/");
-            if (tv < 0 || ta < 0) throw new Exception("image ou son introuvable");
-            mux = new MediaMuxer(sortie.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-            int mv = mux.addTrack(ev.getTrackFormat(tv));
-            int ma = mux.addTrack(ea.getTrackFormat(ta));
-            ev.selectTrack(tv);
-            ea.selectTrack(ta);
-            mux.start();
-            demarre = true;
-            ByteBuffer buf = ByteBuffer.allocate(4 * 1024 * 1024);
-            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-            long tpsV = ev.getSampleTime();
-            long tpsA = ea.getSampleTime();
-            while (tpsV >= 0 || tpsA >= 0) {
-                boolean prendreVideo = tpsV >= 0 && (tpsA < 0 || tpsV <= tpsA);
-                MediaExtractor ex = prendreVideo ? ev : ea;
-                buf.clear();
-                int n = ex.readSampleData(buf, 0);
-                if (n < 0) {
-                    if (prendreVideo) tpsV = -1; else tpsA = -1;
-                    continue;
-                }
-                info.offset = 0;
-                info.size = n;
-                info.presentationTimeUs = ex.getSampleTime();
-                info.flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
-                        ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-                mux.writeSampleData(prendreVideo ? mv : ma, buf, info);
-                ex.advance();
-                if (prendreVideo) tpsV = ev.getSampleTime(); else tpsA = ea.getSampleTime();
-            }
-            mux.stop();
-            demarre = false;
-        } finally {
-            ev.release();
-            ea.release();
-            if (mux != null) {
-                try { if (demarre) mux.stop(); } catch (Exception ignored) {}
-                try { mux.release(); } catch (Exception ignored) {}
-            }
+    private void ecrire(MediaExtractor ex, MediaMuxer mm, int piste) {
+        ByteBuffer buf = ByteBuffer.allocate(1 << 20);
+        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+        while (true) {
+            buf.clear();
+            int n = ex.readSampleData(buf, 0);
+            if (n < 0) break;
+            int flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                    ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+            info.set(0, n, ex.getSampleTime(), flags);
+            mm.writeSampleData(piste, buf, info);
+            ex.advance();
         }
+    }
+
+    // ---------- Barre du bas ----------
+
+    private void barreDebut(String titre, String info) {
+        barre.setVisibility(View.VISIBLE);
+        tvDlTitre.setText(titre);
+        tvDlInfo.setText(info);
+        pb.setIndeterminate(true);
+        bAnnuler.setText("Annuler");
+        bAnnuler.setVisibility(View.VISIBLE);
+        bOk.setVisibility(View.GONE);
+    }
+
+    private void barreFin(boolean ok, String titre, String info) {
+        enCours = false;
+        barre.setVisibility(View.VISIBLE);
+        tvDlTitre.setText(titre);
+        tvDlInfo.setText(info);
+        pb.setIndeterminate(false);
+        pb.setProgress(ok ? 1000 : 0);
+        bAnnuler.setVisibility(View.GONE);
+        bOk.setText(ok ? "OK" : "Fermer");
+        bOk.setVisibility(View.VISIBLE);
+    }
+
+    private void barreCacher() {
+        if (enCours) return;
+        barre.setVisibility(View.GONE);
     }
 }
