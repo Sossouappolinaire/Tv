@@ -33,21 +33,15 @@ public class HorsLigneActivity extends Activity {
 
         Ui.ajouter(root, Ui.texte(this, "📂 Sans internet", 24, Ui.TXT, true), 0);
         Ui.ajouter(root, Ui.texte(this,
-                "Des moyens de regarder ou écouter sans connexion internet : fichiers du téléphone, "
-                + "box ou récepteur sur votre Wi-Fi local, radio FM.", 13, Ui.TXT2, false), 6);
+                "Regarder ou écouter sans connexion internet : fichiers du téléphone, "
+                + "vidéos téléchargées d'avance et radio FM.", 13, Ui.TXT2, false), 6);
 
         carte(root, "🎞", "Mes vidéos & audios",
                 "Fichiers du téléphone et vidéos téléchargées d'avance", 0xFF2E9E73,
                 () -> startActivity(new Intent(this, ListeActivity.class).putExtra("mode", "fichiers")));
-        carte(root, "🏠", "Ma box / réseau local",
-                "Box TV, récepteur satellite, tuner TNT réseau (Wi-Fi local)", Ui.VIOLET,
-                () -> startActivity(new Intent(this, ListeActivity.class).putExtra("mode", "reseau")));
         carte(root, "📻", "Radio FM du téléphone",
                 "Ouvre l'appli FM de votre téléphone, s'il en a une", Ui.ACCENT,
                 this::ouvrirFm);
-        carte(root, "📡", "TNT USB & satellite",
-                "Comment les utiliser avec l'application", 0xFF3A7BD5,
-                this::infosTnt);
         carte(root, "⬇", "Télécharger une vidéo",
                 "À partir d'un lien direct, pour la voir plus tard", 0xFFC9A227,
                 this::dialogTelecharger);
@@ -92,23 +86,6 @@ public class HorsLigneActivity extends Activity {
                         + "dans vos applications (souvent dans un dossier « Outils »). Il faut un téléphone "
                         + "qui a une puce FM, et brancher des écouteurs filaires, qui servent d'antenne.")
                 .setPositiveButton("OK", null).show();
-    }
-
-    // ---------- TNT USB / satellite ----------
-
-    void infosTnt() {
-        new AlertDialog.Builder(this)
-                .setTitle("TNT USB & satellite")
-                .setMessage("• Une clé TNT USB branchée directement au téléphone a besoin de son propre "
-                        + "programme pilote : cette application ne peut pas la lire toute seule.\n\n"
-                        + "• Ce qui marche : un tuner ou une box qui diffuse ses chaînes sur votre Wi-Fi "
-                        + "(par exemple HDHomeRun, SAT>IP, Tvheadend, ou un récepteur satellite avec "
-                        + "flux réseau). Ajoutez le lien du flux ou la liste M3U dans « Ma box / réseau "
-                        + "local » : cela fonctionne sans internet, seulement avec le Wi-Fi local.\n\n"
-                        + "• Les flux en multidiffusion (udp:// ou rtp://) ne sont pas pris en charge.")
-                .setPositiveButton("Ouvrir « Ma box »", (d, w) ->
-                        startActivity(new Intent(this, ListeActivity.class).putExtra("mode", "reseau")))
-                .setNegativeButton("Fermer", null).show();
     }
 
     // ---------- Téléchargement ----------

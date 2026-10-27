@@ -6,14 +6,19 @@
 
     <!-- Analyse du téléphone -->
     <uses-permission android:name="android.permission.READ_SMS" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
+
+    <!-- Mes vidéos : lire les vidéos du téléphone -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="29" />
 
     <!-- Pour retrouver une éventuelle appli Radio FM du téléphone -->
     <queries>
+        <!-- Voix de synthèse (traduction audio) -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
         <package android:name="com.android.fmradio" />
         <package android:name="com.mediatek.fmradio" />
         <package android:name="com.sec.android.app.fm" />
@@ -46,6 +51,15 @@
 
         <activity
             android:name=".TvActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+
+        <activity
+            android:name=".VideosActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".LecteurVideoActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
 

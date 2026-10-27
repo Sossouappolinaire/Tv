@@ -14,6 +14,7 @@ import android.media.MediaCodec;
 import android.media.MediaExtractor;
 import android.media.MediaFormat;
 import android.media.MediaMuxer;
+import android.net.Uri;
 import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
@@ -35,9 +36,11 @@ import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.MediaController;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
+import android.widget.VideoView;
 import android.widget.Toast;
 
 import org.json.JSONTokener;
@@ -55,7 +58,9 @@ import java.net.URLDecoder;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.regex.Matcher;
@@ -139,6 +144,10 @@ public class FacebookActivity extends Activity {
     private volatile boolean annule = false;
     private volatile boolean enCours = false;
     private volatile String etape = "";
+    private VideoView apercu;
+    private String dernierLien = "";
+    private volatile boolean webEssaye = false;   // la lecture via la page Facebook a déjà été tentée
+    private long premiereTrouvaille = 0;   // moment où la WebView a vu un 1er flux (thread principal)
 
     // =====================================================================
     //  Cycle de vie
@@ -164,6 +173,7 @@ public class FacebookActivity extends Activity {
     protected void onDestroy() {
         generation++;
         annule = true;
+        arreterApercu();
         nettoyerWeb();
         super.onDestroy();
     }
@@ -419,9 +429,11 @@ public class FacebookActivity extends Activity {
             return;
         }
         final String lien = l;
+        dernierLien = lien;
+        webEssaye = false;
         final int g = ++generation;
         nettoyerWeb();
-        resultats.removeAllViews();
+        viderResultats();
         barreCacher();
         tvEtat.setText("Analyse du lien…");
         new Thread(() -> {
@@ -577,6 +589,7 @@ public class FacebookActivity extends Activity {
     private void lancerWeb(final String lien, final int g) {
         nettoyerWeb();
         captures.clear();
+        premiereTrouvaille = 0;
         tvEtat.setText("Lecture de la page Facebook…");
         web = new WebView(this);
         WebSettings s = web.getSettings();
@@ -617,11 +630,23 @@ public class FacebookActivity extends Activity {
                 String html = depuisJson(valeur);
                 if (html != null) extraire(html, UA_PC, r);
                 capturesVersRes(r);
-                if (r.sd != null || r.hd != null || r.dashV != null) {
-                    afficher(r);
-                    return;
+                boolean trouve = r.sd != null || r.hd != null || r.dashV != null;
+                if (trouve) {
+                    long now = System.currentTimeMillis();
+                    if (premiereTrouvaille == 0) premiereTrouvaille = now;
+                    // On attend un peu : le son (flux séparé) et la HD arrivent souvent après le 1er flux.
+                    boolean complet = (r.sd != null && r.hd != null) || (r.dashV != null && r.dashA != null);
+                    if (complet || now - premiereTrouvaille >= 6000) {
+                        afficher(r);
+                        return;
+                    }
+                    tvEtat.setText("Vidéo détectée, recherche du son et de la meilleure qualité…");
                 }
                 if (essai >= 20) {
+                    if (trouve) {
+                        afficher(r);
+                        return;
+                    }
                     nettoyerWeb();
                     tvEtat.setText("⚠ Aucun lien de téléchargement trouvé, même après avoir ouvert la page. "
                             + "La vidéo est peut-être privée, Facebook demande une connexion, ou la page a changé.");
@@ -645,7 +670,7 @@ public class FacebookActivity extends Activity {
     /** Appelé sur un thread de la WebView : on garde les fichiers vidéo/audio de fbcdn. */
     private void noterRequete(String url) {
         String bas = url.toLowerCase(Locale.ROOT);
-        if (!bas.contains("fbcdn") || !bas.contains(".mp4")) return;
+        if (!(bas.contains("fbcdn") || bas.contains("fbcdn.net")) || !(bas.contains(".mp4") || bas.contains("bytestart="))) return;
         boolean morceau = bas.contains("bytestart=");
         String propre = nettoyer(url);
         for (String[] c : captures) {
@@ -733,9 +758,10 @@ public class FacebookActivity extends Activity {
 
     private void afficher(Res r) {
         nettoyerWeb();
-        resultats.removeAllViews();
+        viderResultats();
         if (r.sd != null || r.hd != null) {
-            tvEtat.setText("✅ Vidéo trouvée. Choisissez le format :");
+            tvEtat.setText("✅ Vidéo trouvée. Regardez l'aperçu, puis choisissez le format :");
+            ajouterApercu(r.sd != null ? r.sd : r.hd, r.sd != null ? r.uaSd : r.uaHd);
             final Plan psd = r.sd != null ? new Plan("sd", r.sd, null, r.uaSd) : null;
             final Plan phd = r.hd != null ? new Plan("hd", r.hd, null, r.uaHd) : null;
             carte("Standard (SD)",
@@ -748,6 +774,7 @@ public class FacebookActivity extends Activity {
                     v -> confirmer("HD (haute qualité)", phd));
         } else if (r.dashV != null) {
             final Plan pd = new Plan("hd", r.dashV, r.dashA, r.uaDash);
+            ajouterApercu(r.dashV, r.uaDash);
             if (r.dashA != null) {
                 tvEtat.setText("✅ Vidéo trouvée (image et son séparés : ils seront rassemblés dans un seul fichier).");
                 carte("Meilleure qualité avec le son", "Image et son rassemblés dans un seul fichier",
@@ -761,6 +788,68 @@ public class FacebookActivity extends Activity {
             tvEtat.setText("⚠ Aucun lien de téléchargement trouvé. La vidéo est peut-être privée, "
                     + "Facebook demande une connexion, ou la page a changé.");
         }
+    }
+
+    // ---------- Aperçu de la vidéo avant téléchargement ----------
+
+    private void viderResultats() {
+        arreterApercu();
+        resultats.removeAllViews();
+    }
+
+    private void arreterApercu() {
+        if (apercu != null) {
+            try {
+                apercu.stopPlayback();
+            } catch (Exception ignore) {
+                // rien
+            }
+            apercu = null;
+        }
+    }
+
+    /**
+     * Lit la vidéo trouvée AVANT le téléchargement. Si le lecteur n'arrive pas à la lire, le lien direct
+     * ne marchera pas non plus : on bascule alors sur la lecture via la page Facebook.
+     */
+    private void ajouterApercu(String url, String ua) {
+        if (url == null) return;
+        final TextView etat = texte("Chargement de l'aperçu…", 12, false);
+        etat.setTextColor(C_TXT2);
+        resultats.addView(etat, lp(-1, -2, 0, 0, 0, 6));
+        final VideoView vv = new VideoView(this);
+        apercu = vv;
+        vv.setBackgroundColor(Color.BLACK);
+        MediaController mc = new MediaController(this);
+        mc.setAnchorView(vv);
+        vv.setMediaController(mc);
+        vv.setOnPreparedListener(mp -> {
+            etat.setText("▶ Aperçu : vérifiez que c'est la bonne vidéo.");
+            vv.start();
+        });
+        vv.setOnErrorListener((mp, what, extra) -> {
+            etat.setText("⚠ Aperçu impossible : le lien direct n'est pas lisible.");
+            if (!enCours) basculerWeb("Le lien direct n'est pas lisible, lecture via la page Facebook…");
+            return true;
+        });
+        resultats.addView(vv, lp(-1, dp(220), 0, 0, 0, 12));
+        Map<String, String> entetes = new HashMap<>();
+        entetes.put("User-Agent", ua == null ? UA_PC : ua);
+        entetes.put("Referer", "https://www.facebook.com/");
+        try {
+            vv.setVideoURI(Uri.parse(url), entetes);
+        } catch (Exception e) {
+            etat.setText("⚠ Aperçu impossible.");
+        }
+    }
+
+    /** Dernier recours : ouvrir la page dans une WebView et récupérer les vrais liens que Facebook sert. */
+    private void basculerWeb(String message) {
+        if (webEssaye || dernierLien.isEmpty()) return;
+        webEssaye = true;
+        viderResultats();
+        tvEtat.setText(message);
+        lancerWeb(dernierLien, ++generation);
     }
 
     private void carte(String titre, String sous, boolean dispo, int couleurBord, View.OnClickListener l) {
@@ -801,6 +890,7 @@ public class FacebookActivity extends Activity {
             toast("Un téléchargement est déjà en cours");
             return;
         }
+        arreterApercu();
         enCours = true;
         annule = false;
         etape = "";
@@ -845,10 +935,15 @@ public class FacebookActivity extends Activity {
             if (p.audio != null) finale.delete();
             final boolean a = annule;
             final String msg = e.getMessage() == null ? "erreur inconnue" : e.getMessage();
+            final boolean basculer = !webEssaye && msg.contains("page web");
             h.post(() -> {
                 if (a) {
                     enCours = false;
                     barreCacher();
+                } else if (basculer) {
+                    enCours = false;
+                    barreCacher();
+                    basculerWeb("Facebook refuse le lien direct. Lecture de la page pour obtenir un lien valide…");
                 } else {
                     barreFin(false, "⚠ Téléchargement impossible", msg);
                 }
@@ -859,42 +954,88 @@ public class FacebookActivity extends Activity {
         }
     }
 
-    /** Essaie plusieurs identités (UA) : un lien signé pour l'une est parfois refusé pour l'autre. */
+    /**
+     * Essaie plusieurs combinaisons (identité UA, avec/sans Referer) : un lien signé pour l'une
+     * est parfois refusé pour l'autre. Si tout échoue, le message d'erreur dit pourquoi.
+     */
     private void copier(String adresse, String ua, File dest, float debut, float fin) throws Exception {
         List<String> uas = new ArrayList<>();
         uas.add(ua);
-        for (String u : new String[]{UA_PC, UA_BOT, UA_TEL}) {
+        for (String u : new String[]{UA_PC, UA_TEL, UA_BOT}) {
             if (!uas.contains(u)) uas.add(u);
         }
-        Exception derniere = null;
-        for (String u : uas) {
+        StringBuilder bilan = new StringBuilder();
+        int n = 0;
+        for (int k = 0; k < uas.size() + 1; k++) {
             if (annule) throw new Exception("annulé");
+            // dernier essai : identité PC mais SANS Referer
+            String u = k < uas.size() ? uas.get(k) : UA_PC;
+            boolean referer = k < uas.size();
             try {
-                copierUnique(adresse, u, dest, debut, fin);
+                copierUnique(adresse, u, referer, dest, debut, fin);
                 return;
             } catch (Exception e) {
                 if (annule) throw e;
-                derniere = e;
+                n++;
+                String m = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+                if (bilan.indexOf(m) < 0) {
+                    if (bilan.length() > 0) bilan.append(" / ");
+                    bilan.append(m);
+                }
             }
         }
-        throw derniere != null ? derniere : new Exception("échec du téléchargement");
+        String res = bilan.length() == 0 ? "échec du téléchargement" : bilan.toString();
+        if (res.contains("http 403") || res.contains("http 410") || res.contains("http 404")) {
+            res += "\nLe lien a probablement expiré : appuyez sur « Analyser » pour en obtenir un nouveau.";
+        }
+        throw new Exception(res);
     }
 
-    private void copierUnique(String adresse, String ua, File dest, float debut, float fin) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(adresse).openConnection();
+    private void copierUnique(String adresse, String ua, boolean referer, File dest,
+                              float debut, float fin) throws Exception {
+        String courant = adresse;
+        HttpURLConnection c = null;
+        int code = -1;
         try {
-            c.setRequestProperty("User-Agent", ua);
-            c.setRequestProperty("Referer", "https://www.facebook.com/");
-            c.setRequestProperty("Accept", "*/*");
-            c.setConnectTimeout(15000);
-            c.setReadTimeout(30000);
-            int code = c.getResponseCode();
+            // Redirections suivies à la main (y compris https -> http, que Java ne suit pas tout seul)
+            for (int i = 0; i < 6; i++) {
+                c = (HttpURLConnection) new URL(courant).openConnection();
+                c.setInstanceFollowRedirects(false);
+                c.setRequestProperty("User-Agent", ua);
+                if (referer) {
+                    c.setRequestProperty("Referer", "https://www.facebook.com/");
+                    c.setRequestProperty("Origin", "https://www.facebook.com");
+                }
+                c.setRequestProperty("Accept", "*/*");
+                c.setRequestProperty("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.8");
+                c.setRequestProperty("Accept-Encoding", "identity");
+                try {
+                    String ck = CookieManager.getInstance().getCookie(courant);
+                    if (ck != null && !ck.isEmpty()) c.setRequestProperty("Cookie", ck);
+                } catch (Exception ignore) {
+                    // pas de cookies : on continue
+                }
+                c.setConnectTimeout(15000);
+                c.setReadTimeout(30000);
+                code = c.getResponseCode();
+                if (code >= 300 && code < 400) {
+                    String loc = c.getHeaderField("Location");
+                    c.disconnect();
+                    c = null;
+                    if (loc == null) throw new Exception("redirection vide");
+                    courant = new URL(new URL(courant), loc).toString();
+                    continue;
+                }
+                break;
+            }
+            if (c == null) throw new Exception("trop de redirections");
             if (code != 200 && code != 206) throw new Exception("http " + code);
             String type = c.getContentType();
             if (type != null) {
                 String t = type.toLowerCase(Locale.ROOT);
                 if (t.startsWith("text/") || t.contains("html") || t.contains("json")) {
-                    throw new Exception("Facebook a répondu par une page web au lieu de la vidéo");
+                    throw new Exception("Facebook a répondu par une page web au lieu de la vidéo ["
+                            + new URL(courant).getHost() + " · " + type + "]");
                 }
             }
             long total = c.getContentLengthLong();
@@ -911,7 +1052,10 @@ public class FacebookActivity extends Activity {
                     if (premierBloc) {
                         premierBloc = false;
                         if (ressembleHtml(buf, n)) {
-                            throw new Exception("Facebook a répondu par une page web au lieu de la vidéo");
+                            String deb = new String(buf, 0, Math.min(n, 60), StandardCharsets.ISO_8859_1)
+                                    .replaceAll("\\s+", " ");
+                            throw new Exception("Facebook a répondu par une page web au lieu de la vidéo ["
+                                    + new URL(courant).getHost() + " · " + deb + "]");
                         }
                     }
                     out.write(buf, 0, n);
@@ -924,12 +1068,13 @@ public class FacebookActivity extends Activity {
                 }
                 progresser(lu, total, debut, fin);
                 if (lu == 0) throw new Exception("fichier vide");
+                if (total > 0 && lu < total) throw new Exception("téléchargement coupé (" + mo(lu) + "/" + mo(total) + " Mo)");
             } finally {
                 out.close();
                 in.close();
             }
         } finally {
-            c.disconnect();
+            if (c != null) c.disconnect();
         }
     }
 
@@ -976,6 +1121,7 @@ public class FacebookActivity extends Activity {
         MediaExtractor ev = new MediaExtractor();
         MediaExtractor ea = new MediaExtractor();
         MediaMuxer mm = null;
+        boolean demarre = false;
         try {
             ev.setDataSource(video.getAbsolutePath());
             ea.setDataSource(audio.getAbsolutePath());
@@ -984,17 +1130,52 @@ public class FacebookActivity extends Activity {
             if (iv < 0 || ia < 0) throw new Exception("image ou son introuvable");
             ev.selectTrack(iv);
             ea.selectTrack(ia);
+            MediaFormat fv = ev.getTrackFormat(iv);
             mm = new MediaMuxer(sortie.getAbsolutePath(), MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4);
-            int tv = mm.addTrack(ev.getTrackFormat(iv));
+            if (fv.containsKey(MediaFormat.KEY_ROTATION)) {
+                try {
+                    mm.setOrientationHint(fv.getInteger(MediaFormat.KEY_ROTATION));
+                } catch (Exception ignore) {
+                    // pas grave
+                }
+            }
+            int tv = mm.addTrack(fv);
             int ta = mm.addTrack(ea.getTrackFormat(ia));
             mm.start();
-            ecrire(ev, mm, tv);
-            ecrire(ea, mm, ta);
+            demarre = true;
+
+            // Écriture entrelacée : à chaque tour on écrit l'échantillon le plus ancien (image ou son)
+            ByteBuffer buf = ByteBuffer.allocate(4 << 20);
+            MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
+            while (true) {
+                long tImg = ev.getSampleTime();
+                long tSon = ea.getSampleTime();
+                if (tImg < 0 && tSon < 0) break;
+                boolean image = tSon < 0 || (tImg >= 0 && tImg <= tSon);
+                MediaExtractor ex = image ? ev : ea;
+                buf.clear();
+                int n = ex.readSampleData(buf, 0);
+                if (n < 0) {
+                    ex.advance();
+                    continue;
+                }
+                int flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
+                        ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
+                info.set(0, n, ex.getSampleTime(), flags);
+                mm.writeSampleData(image ? tv : ta, buf, info);
+                ex.advance();
+            }
             mm.stop();
+            demarre = false;
         } finally {
             ev.release();
             ea.release();
             if (mm != null) {
+                try {
+                    if (demarre) mm.stop();
+                } catch (Exception ignore) {
+                    // rien
+                }
                 try {
                     mm.release();
                 } catch (Exception ignore) {
@@ -1010,21 +1191,6 @@ public class FacebookActivity extends Activity {
             if (mime != null && mime.startsWith(prefixe)) return i;
         }
         return -1;
-    }
-
-    private void ecrire(MediaExtractor ex, MediaMuxer mm, int piste) {
-        ByteBuffer buf = ByteBuffer.allocate(1 << 20);
-        MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
-        while (true) {
-            buf.clear();
-            int n = ex.readSampleData(buf, 0);
-            if (n < 0) break;
-            int flags = (ex.getSampleFlags() & MediaExtractor.SAMPLE_FLAG_SYNC) != 0
-                    ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0;
-            info.set(0, n, ex.getSampleTime(), flags);
-            mm.writeSampleData(piste, buf, info);
-            ex.advance();
-        }
     }
 
     // ---------- Barre du bas ----------

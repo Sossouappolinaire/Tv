@@ -1,14 +1,9 @@
 package bj.radio;
 
 import android.Manifest;
-import android.accessibilityservice.AccessibilityServiceInfo;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.admin.DevicePolicyManager;
-import android.content.ComponentName;
 import android.content.Intent;
-import android.content.pm.ApplicationInfo;
-import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
 import android.net.Uri;
@@ -19,55 +14,66 @@ import android.provider.Settings;
 import android.text.format.Formatter;
 import android.view.Gravity;
 import android.view.View;
-import android.view.accessibility.AccessibilityManager;
 import android.widget.Button;
 import android.widget.CheckBox;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileInputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
+import java.util.Locale;
+import java.util.regex.Pattern;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.TreeMap;
 
 /**
  * Analyse du téléphone :
- *  1) applications suspectes (détection par comportement : permissions, origine, accès spéciaux)
+ *  1) fichiers malveillants : programmes déguisés, scripts, fichier de test antivirus, autorun…
+ *     (détection par nom, extension et contenu réel du fichier ; les .apk ne sont PAS recherchés)
  *  2) fichiers et dossiers cachés (nom commençant par un point), rangés par dossier, supprimables
  */
 public class AnalyseActivity extends Activity {
-
-    static class Suspect {
-        String pkg, nom;
-        int score;
-        List<String> raisons = new ArrayList<>();
-        View carte;
-    }
 
     static class Element {
         File f;
         boolean dossier;
         long taille;
         int nb;
+        int score;
+        List<String> raisons = new ArrayList<>();
         CheckBox box;
         View ligne;
         LinearLayout groupe;
     }
 
+    // Extensions de programmes / scripts Windows : sans intérêt sur Android, souvent propagés par clé USB
+    private static final List<String> EXT_FORTES = Arrays.asList(
+            "exe", "scr", "bat", "cmd", "com", "pif", "vbs", "vbe", "jse", "wsf", "hta", "cpl", "msi", "dll", "ps1", "lnk");
+    // Extensions parfois légitimes : ne comptent que combinées à d'autres indices
+    private static final List<String> EXT_FAIBLES = Arrays.asList("jar", "sh", "js");
+    // Extensions « leurre » : un fichier qui prétend être une image, une vidéo, un document…
+    private static final List<String> EXT_LEURRES = Arrays.asList(
+            "jpg", "jpeg", "png", "gif", "webp", "bmp", "mp3", "mp4", "3gp", "mkv", "avi", "mov",
+            "wav", "ogg", "pdf", "txt", "doc", "xls", "ppt");
+    private static final Pattern DOUBLE_EXT = Pattern.compile(
+            ".*\\.(jpg|jpeg|png|gif|mp3|mp4|3gp|pdf|doc|docx|xls|xlsx|ppt|pptx|txt|zip|rar)"
+                    + "\\.(exe|scr|bat|cmd|vbs|vbe|js|jse|jar|lnk|com|pif|apk|hta|wsf|ps1)$");
+    private static final String EICAR = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE";
+    private static final int MAX_FICHIERS = 400000;
+
     private TextView statut;
     private Button btnAnalyse, btnSupprimer;
-    private LinearLayout zoneResultats, corpsApps, corpsFichiers;
-    private final List<Suspect> suspects = new ArrayList<>();
+    private LinearLayout zoneResultats, corpsMenaces, corpsFichiers;
     private final List<Element> elements = new ArrayList<>();
     private volatile boolean enCours = false;
     private boolean attendAcces = false;
-    private int nbAppsAnalysees = 0;
+    private int nbFichiersVus = 0;
     private long dernierMaj = 0;
 
     @Override
@@ -86,10 +92,12 @@ public class AnalyseActivity extends Activity {
 
         Ui.ajouter(contenu, Ui.texte(this, "🛡 Analyse du téléphone", 24, Ui.TXT, true), 0);
         Ui.ajouter(contenu, Ui.texte(this,
-                "Cherche les applications suspectes, puis les fichiers cachés rangés par dossier. "
+                "Cherche les fichiers malveillants (programmes déguisés en photo ou en vidéo, scripts, "
+                + "fichiers de propagation par clé USB), puis les fichiers cachés rangés par dossier. "
                 + "Vous choisissez ce qu'il faut supprimer : rien n'est effacé sans votre accord.\n\n"
-                + "Ce n'est pas un antivirus à base de signatures : l'analyse repose sur le comportement "
-                + "(accès demandés, origine de l'appli). Une appli signalée n'est pas forcément un virus.",
+                + "Ce n'est pas un antivirus à base de signatures : l'analyse repose sur le nom, l'extension "
+                + "et le contenu réel des fichiers. Un fichier signalé n'est pas forcément un virus. "
+                + "Les applications installées ne sont pas analysées.",
                 13, Ui.TXT2, false), 6);
 
         btnAnalyse = Ui.bouton(this, "🔍 Lancer l'analyse", 0xFFC0392B);
@@ -122,17 +130,6 @@ public class AnalyseActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        // retire les applis désinstallées entre-temps
-        PackageManager pm = getPackageManager();
-        for (Suspect s : new ArrayList<>(suspects)) {
-            try {
-                pm.getPackageInfo(s.pkg, 0);
-            } catch (PackageManager.NameNotFoundException e) {
-                if (s.carte != null && s.carte.getParent() instanceof LinearLayout)
-                    ((LinearLayout) s.carte.getParent()).removeView(s.carte);
-                suspects.remove(s);
-            }
-        }
         reprendre();
     }
 
@@ -154,20 +151,17 @@ public class AnalyseActivity extends Activity {
     private void lancer() {
         if (enCours) return;
         enCours = true;
-        suspects.clear();
         elements.clear();
         zoneResultats.removeAllViews();
         btnSupprimer.setVisibility(View.GONE);
         btnAnalyse.setEnabled(false);
         btnAnalyse.setText("Analyse en cours…");
-        statut.setText("Analyse des applications…");
+        statut.setText("Analyse des fichiers…");
 
-        corpsApps = section("🛡 Applications suspectes");
+        corpsMenaces = section("🦠 Fichiers malveillants");
         corpsFichiers = section("👻 Fichiers cachés");
 
         new Thread(() -> {
-            List<Suspect> res = analyserApps();
-            runOnUiThread(() -> afficherApps(res));
             if (accesStockage()) {
                 scannerFichiers();
             } else {
@@ -182,6 +176,7 @@ public class AnalyseActivity extends Activity {
         btnAnalyse.setEnabled(false);
         btnAnalyse.setText("Analyse en cours…");
         corpsFichiers.removeAllViews();
+        corpsMenaces.removeAllViews();
         elements.clear();
         new Thread(() -> {
             scannerFichiers();
@@ -206,156 +201,101 @@ public class AnalyseActivity extends Activity {
         return corps;
     }
 
-    // ================= Applications suspectes =================
+    // ================= Fichiers malveillants =================
 
-    private List<Suspect> analyserApps() {
-        PackageManager pm = getPackageManager();
-        Set<String> access = paquetsAccessibilite();
-        Set<String> admins = paquetsAdmin();
-        Set<String> notifs = paquetsNotif();
-        List<PackageInfo> tous;
-        try {
-            tous = pm.getInstalledPackages(PackageManager.GET_PERMISSIONS);
+    private byte[] entete(File f, int n) {
+        try (FileInputStream in = new FileInputStream(f)) {
+            byte[] b = new byte[n];
+            int r = in.read(b);
+            if (r <= 0) return null;
+            return r == n ? b : Arrays.copyOf(b, r);
         } catch (Exception e) {
-            tous = new ArrayList<>();
+            return null;
         }
-        List<Suspect> res = new ArrayList<>();
-        int n = 0;
-        for (PackageInfo pi : tous) {
-            ApplicationInfo ai = pi.applicationInfo;
-            if (ai == null || pi.packageName.equals(getPackageName())) continue;
-            if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0) continue;
-            n++;
-            String pkg = pi.packageName;
-            Suspect s = new Suspect();
-            s.pkg = pkg;
-            try { s.nom = pm.getApplicationLabel(ai).toString(); } catch (Exception e) { s.nom = pkg; }
-
-            if (access.contains(pkg)) {
-                s.score += 4;
-                s.raisons.add("Service d'accessibilité actif : peut lire l'écran et agir à votre place");
-            }
-            if (admins.contains(pkg)) {
-                s.score += 4;
-                s.raisons.add("Administrateur de l'appareil : peut gêner sa propre désinstallation");
-            }
-            if (notifs.contains(pkg)) {
-                s.score += 2;
-                s.raisons.add("Lit toutes vos notifications (codes SMS, messages…)");
-            }
-            if (perm(pi, "android.permission.READ_SMS", true) || perm(pi, "android.permission.RECEIVE_SMS", true)) {
-                s.score += 2;
-                s.raisons.add("Peut lire vos SMS");
-            }
-            if (perm(pi, "android.permission.SEND_SMS", true)) {
-                s.score += 2;
-                s.raisons.add("Peut envoyer des SMS (risque de frais)");
-            }
-            if (perm(pi, "android.permission.READ_CALL_LOG", true)) {
-                s.score += 1;
-                s.raisons.add("Peut lire votre journal d'appels");
-            }
-            if (perm(pi, "android.permission.SYSTEM_ALERT_WINDOW", false)) {
-                s.score += 1;
-                s.raisons.add("Peut s'afficher par-dessus les autres applis");
-            }
-            if (perm(pi, "android.permission.REQUEST_INSTALL_PACKAGES", false)) {
-                s.score += 1;
-                s.raisons.add("Peut installer d'autres applis");
-            }
-            if (pm.getLaunchIntentForPackage(pkg) == null
-                    && pm.getLeanbackLaunchIntentForPackage(pkg) == null) {
-                s.score += 2;
-                s.raisons.add("Aucune icône de lancement : application cachée");
-            }
-            if (!depuisBoutique(pm, pkg)) {
-                s.score += 1;
-                s.raisons.add("Installée hors d'une boutique officielle");
-            }
-            if ((ai.flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0) {
-                s.score += 1;
-                s.raisons.add("Version de test (débogage activé)");
-            }
-            if (s.score >= 3) res.add(s);
-        }
-        nbAppsAnalysees = n;
-        res.sort((a, b) -> b.score - a.score);
-        return res;
     }
 
-    private boolean perm(PackageInfo pi, String nom, boolean accordee) {
-        if (pi.requestedPermissions == null) return false;
-        for (int i = 0; i < pi.requestedPermissions.length; i++) {
-            if (nom.equals(pi.requestedPermissions[i])) {
-                if (!accordee) return true;
-                return pi.requestedPermissionsFlags != null
-                        && (pi.requestedPermissionsFlags[i] & PackageInfo.REQUESTED_PERMISSION_GRANTED) != 0;
+    /** Renvoie un élément si le fichier est suspect (score >= 3), sinon null. */
+    private Element evaluer(File f, String nom) {
+        String bas = nom.toLowerCase(Locale.ROOT);
+        int pt = bas.lastIndexOf('.');
+        String ext = pt >= 0 ? bas.substring(pt + 1) : "";
+        int score = 0;
+        List<String> rs = new ArrayList<>();
+        long taille = f.length();
+
+        // Fichier de test standard des antivirus (inoffensif, mais prouve que la détection marche)
+        if (taille >= 68 && taille <= 200) {
+            byte[] b = entete(f, 200);
+            if (b != null && new String(b, StandardCharsets.ISO_8859_1).contains(EICAR)) {
+                score += 10;
+                rs.add("Fichier de test antivirus EICAR (inoffensif, utilisé pour tester les antivirus)");
             }
         }
-        return false;
-    }
-
-    private boolean depuisBoutique(PackageManager pm, String pkg) {
-        String inst = null;
-        try {
-            if (Build.VERSION.SDK_INT >= 30) inst = pm.getInstallSourceInfo(pkg).getInstallingPackageName();
-            else inst = pm.getInstallerPackageName(pkg);
-        } catch (Exception ignore) { }
-        if (inst == null) return false;
-        return inst.equals("com.android.vending") || inst.equals("com.sec.android.app.samsungapps")
-                || inst.equals("com.huawei.appmarket") || inst.equals("com.amazon.venezia")
-                || inst.equals("com.xiaomi.mipicks") || inst.equals("com.heytap.market")
-                || inst.equals("com.vivo.appstore");
-    }
-
-    private Set<String> paquetsAccessibilite() {
-        Set<String> s = new HashSet<>();
-        try {
-            AccessibilityManager am = (AccessibilityManager) getSystemService(ACCESSIBILITY_SERVICE);
-            for (AccessibilityServiceInfo i : am.getEnabledAccessibilityServiceList(
-                    AccessibilityServiceInfo.FEEDBACK_ALL_MASK)) {
-                s.add(i.getResolveInfo().serviceInfo.packageName);
-            }
-        } catch (Exception ignore) { }
-        return s;
-    }
-
-    private Set<String> paquetsAdmin() {
-        Set<String> s = new HashSet<>();
-        try {
-            DevicePolicyManager dpm = (DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-            List<ComponentName> l = dpm.getActiveAdmins();
-            if (l != null) for (ComponentName c : l) s.add(c.getPackageName());
-        } catch (Exception ignore) { }
-        return s;
-    }
-
-    private Set<String> paquetsNotif() {
-        Set<String> s = new HashSet<>();
-        try {
-            String v = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-            if (v != null) {
-                for (String part : v.split(":")) {
-                    ComponentName c = ComponentName.unflattenFromString(part);
-                    if (c != null) s.add(c.getPackageName());
+        if (bas.equals("autorun.inf")) {
+            score += 5;
+            rs.add("autorun.inf : technique de virus qui se propagent par clé USB / carte mémoire");
+        }
+        if (DOUBLE_EXT.matcher(bas).matches()) {
+            score += 6;
+            rs.add("Double extension : un programme se fait passer pour une image, une vidéo ou un document");
+        } else if (EXT_FORTES.contains(ext)) {
+            score += 3;
+            rs.add("Programme ou script Windows (." + ext + ") : inutile sur Android, souvent un virus copié depuis un PC");
+        } else if (EXT_FAIBLES.contains(ext)) {
+            score += 1;
+        }
+        if (nom.startsWith(".") && (EXT_FORTES.contains(ext) || EXT_FAIBLES.contains(ext))) {
+            score += 2;
+            rs.add("Programme ou script caché (nom commençant par un point)");
+        }
+        // Contenu réel : une « photo » qui est en fait un programme
+        if (EXT_LEURRES.contains(ext) && taille >= 4) {
+            byte[] h = entete(f, 8);
+            if (h != null && h.length >= 4) {
+                if (h[0] == 'M' && h[1] == 'Z') {
+                    score += 6;
+                    rs.add("Le contenu est un programme Windows déguisé en ." + ext);
+                } else if (h[0] == 0x7F && h[1] == 'E' && h[2] == 'L' && h[3] == 'F') {
+                    score += 6;
+                    rs.add("Le contenu est un exécutable Linux/Android déguisé en ." + ext);
+                } else if (h[0] == 'd' && h[1] == 'e' && h[2] == 'x' && h[3] == 0x0A) {
+                    score += 6;
+                    rs.add("Le contenu est du code d'application Android (dex) déguisé en ." + ext);
+                } else if (h[0] == '#' && h[1] == '!') {
+                    score += 4;
+                    rs.add("Le contenu est un script déguisé en ." + ext);
+                } else if (h[0] == 'P' && h[1] == 'K' && h[2] == 3 && h[3] == 4) {
+                    score += 4;
+                    rs.add("Archive ZIP déguisée en ." + ext + " (peut cacher une application)");
                 }
             }
-        } catch (Exception ignore) { }
-        return s;
+        }
+        if (score < 3) return null;
+        Element e = new Element();
+        e.f = f;
+        e.taille = taille;
+        e.nb = 1;
+        e.score = score;
+        e.raisons = rs;
+        return e;
     }
 
-    private void afficherApps(List<Suspect> res) {
-        suspects.addAll(res);
-        corpsApps.removeAllViews();
-        if (res.isEmpty()) {
-            corpsApps.addView(Ui.texte(this, "✅ Aucune application suspecte parmi les "
-                    + nbAppsAnalysees + " applications installées.", 14, Ui.TXT2, false));
+    private void afficherMenaces(List<Element> menaces, File racine) {
+        corpsMenaces.removeAllViews();
+        if (menaces.isEmpty()) {
+            corpsMenaces.addView(Ui.texte(this, "✅ Aucun fichier malveillant détecté parmi les "
+                    + nbFichiersVus + " fichiers examinés.", 14, Ui.TXT2, false));
+            corpsMenaces.addView(Ui.texte(this,
+                    "Cette analyse repère les programmes déguisés et les scripts dangereux ; elle ne remplace "
+                    + "pas un antivirus à base de signatures.", 11, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 6, 0));
             return;
         }
-        corpsApps.addView(Ui.texte(this, res.size() + " application(s) à vérifier sur "
-                + nbAppsAnalysees + " analysées :", 13, Ui.TXT2, false));
-        PackageManager pm = getPackageManager();
-        for (Suspect s : res) {
+        menaces.sort((a, b) -> b.score - a.score);
+        elements.addAll(menaces);
+        corpsMenaces.addView(Ui.texte(this, menaces.size() + " fichier(s) suspect(s) sur "
+                + nbFichiersVus + " examinés :", 13, Ui.TXT2, false));
+        String base = racine.getAbsolutePath();
+        for (Element e : menaces) {
             LinearLayout carte = new LinearLayout(this);
             carte.setOrientation(LinearLayout.VERTICAL);
             carte.setBackground(Ui.rond(Ui.CARD, 16, this));
@@ -364,16 +304,21 @@ public class AnalyseActivity extends Activity {
 
             LinearLayout haut = new LinearLayout(this);
             haut.setGravity(Gravity.CENTER_VERTICAL);
-            ImageView ic = new ImageView(this);
-            try { ic.setImageDrawable(pm.getApplicationIcon(s.pkg)); } catch (Exception ignore) { }
-            haut.addView(ic, new LinearLayout.LayoutParams(Ui.dp(this, 44), Ui.dp(this, 44)));
+            CheckBox cb = new CheckBox(this);
+            cb.setButtonTintList(ColorStateList.valueOf(Ui.ACCENT));
+            cb.setOnCheckedChangeListener((v, c) -> majBouton());
+            haut.addView(cb);
             LinearLayout noms = new LinearLayout(this);
             noms.setOrientation(LinearLayout.VERTICAL);
-            noms.addView(Ui.texte(this, s.nom, 16, Ui.TXT, true));
-            noms.addView(Ui.texte(this, s.pkg, 11, Ui.TXT2, false));
-            haut.addView(noms, Ui.lp(this, 0, -2, 1f, 0, 12));
-            boolean eleve = s.score >= 5;
-            TextView niveau = Ui.texte(this, eleve ? "Risque élevé" : "À vérifier", 12, Ui.TXT, true);
+            noms.addView(Ui.texte(this, e.f.getName(), 15, Ui.TXT, true));
+            String chemin = e.f.getParent() == null ? "" : e.f.getParent();
+            if (chemin.startsWith(base)) chemin = chemin.substring(base.length());
+            if (chemin.isEmpty()) chemin = "/";
+            noms.addView(Ui.texte(this, chemin + " • " + Formatter.formatFileSize(this, e.taille),
+                    11, Ui.TXT2, false));
+            haut.addView(noms, Ui.lp(this, 0, -2, 1f, 0, 6));
+            boolean eleve = e.score >= 6;
+            TextView niveau = Ui.texte(this, eleve ? "Dangereux" : "Suspect", 12, Ui.TXT, true);
             niveau.setBackground(Ui.rond(eleve ? 0xFFC0392B : 0xFFD68910, 10, this));
             int m = Ui.dp(this, 8);
             niveau.setPadding(m, m / 2, m, m / 2);
@@ -381,27 +326,18 @@ public class AnalyseActivity extends Activity {
             carte.addView(haut);
 
             StringBuilder sb = new StringBuilder();
-            for (String r : s.raisons) sb.append("• ").append(r).append('\n');
+            for (String r : e.raisons) sb.append("• ").append(r).append('\n');
             carte.addView(Ui.texte(this, sb.toString().trim(), 12, Ui.TXT2, false),
-                    Ui.lp(this, -1, -2, 0f, 10, 0));
+                    Ui.lp(this, -1, -2, 0f, 8, 0));
 
-            LinearLayout bs = new LinearLayout(this);
-            Button del = Ui.bouton(this, "Désinstaller", 0xFFC0392B);
-            del.setOnClickListener(v -> startActivity(
-                    new Intent(Intent.ACTION_DELETE, Uri.parse("package:" + s.pkg))));
-            Button info = Ui.bouton(this, "Infos / Paramètres", 0xFF3A7BD5);
-            info.setOnClickListener(v -> startActivity(
-                    new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + s.pkg))));
-            bs.addView(del, new LinearLayout.LayoutParams(0, -2, 1f));
-            bs.addView(info, Ui.lp(this, 0, -2, 1f, 0, 8));
-            carte.addView(bs, Ui.lp(this, -1, -2, 0f, 10, 0));
-
-            s.carte = carte;
-            corpsApps.addView(carte, Ui.lp(this, -1, -2, 0f, 10, 0));
+            e.box = cb;
+            e.ligne = carte;
+            e.groupe = corpsMenaces;
+            corpsMenaces.addView(carte, Ui.lp(this, -1, -2, 0f, 10, 0));
         }
-        corpsApps.addView(Ui.texte(this,
-                "Si « Désinstaller » est refusé : ouvrez « Infos / Paramètres », ou désactivez d'abord "
-                + "l'accès d'accessibilité / d'administrateur de l'appareil dans les réglages Android.",
+        corpsMenaces.addView(Ui.texte(this,
+                "Cochez les fichiers à effacer puis appuyez sur « Supprimer la sélection ». "
+                + "Ne supprimez pas un fichier que vous avez créé vous-même sans vérifier.",
                 11, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 8, 0));
     }
 
@@ -415,8 +351,11 @@ public class AnalyseActivity extends Activity {
 
     private void demanderAcces() {
         corpsFichiers.removeAllViews();
+        corpsMenaces.removeAllViews();
+        corpsMenaces.addView(Ui.texte(this,
+                "En attente de l'accès aux fichiers (voir plus bas).", 13, Ui.TXT2, false));
         corpsFichiers.addView(Ui.texte(this,
-                "Pour chercher (et pouvoir supprimer) les fichiers cachés, Android demande d'autoriser "
+                "Pour chercher (et pouvoir supprimer) les fichiers malveillants et cachés, Android demande d'autoriser "
                 + "l'accès à tous les fichiers. L'analyse des fichiers reprendra automatiquement au retour.",
                 13, Ui.TXT2, false));
         Button b = Ui.bouton(this, "Autoriser l'accès aux fichiers", 0xFF2E9E73);
@@ -439,13 +378,24 @@ public class AnalyseActivity extends Activity {
 
     private void scannerFichiers() {
         File racine = Environment.getExternalStorageDirectory();
-        List<Element> trouves = new ArrayList<>();
-        parcourir(racine, 0, trouves);
-        runOnUiThread(() -> afficherFichiers(trouves, racine));
+        List<Element> caches = new ArrayList<>();
+        List<Element> menaces = new ArrayList<>();
+        nbFichiersVus = 0;
+        parcourir(racine, 0, false, caches, menaces);
+        runOnUiThread(() -> {
+            afficherMenaces(menaces, racine);
+            afficherFichiers(caches, racine);
+        });
     }
 
-    private void parcourir(File dossier, int profondeur, List<Element> trouves) {
-        if (profondeur > 14) return;
+    /**
+     * Un seul passage sur le stockage : repère les fichiers cachés ET évalue chaque fichier.
+     * Les dossiers cachés sont aussi explorés (les virus s'y cachent), mais leur contenu n'est pas
+     * listé dans « Fichiers cachés » (le dossier est déjà listé en entier).
+     */
+    private void parcourir(File dossier, int profondeur, boolean dansCache,
+                           List<Element> caches, List<Element> menaces) {
+        if (profondeur > 14 || nbFichiersVus > MAX_FICHIERS) return;
         long t = System.currentTimeMillis();
         if (t - dernierMaj > 250) {
             dernierMaj = t;
@@ -457,12 +407,13 @@ public class AnalyseActivity extends Activity {
         for (File f : liste) {
             String nom = f.getName();
             if (profondeur == 0 && nom.equals("Android")) continue; // dossiers privés des applis
-            if (nom.startsWith(".")) {
-                if (nom.equals(".nomedia")) continue; // inoffensif : simple consigne à la galerie
+            boolean cache = nom.startsWith(".") && !nom.equals(".nomedia");
+            boolean estDossier = f.isDirectory();
+            if (cache && !dansCache) {
                 Element e = new Element();
                 e.f = f;
-                e.dossier = f.isDirectory();
-                if (e.dossier) {
+                e.dossier = estDossier;
+                if (estDossier) {
                     long[] acc = new long[2];
                     taille(f, acc);
                     e.taille = acc[0];
@@ -471,10 +422,15 @@ public class AnalyseActivity extends Activity {
                     e.taille = f.length();
                     e.nb = 1;
                 }
-                trouves.add(e);
-                continue;
+                caches.add(e);
             }
-            if (f.isDirectory()) parcourir(f, profondeur + 1, trouves);
+            if (estDossier) {
+                parcourir(f, profondeur + 1, dansCache || cache, caches, menaces);
+            } else {
+                nbFichiersVus++;
+                Element m = evaluer(f, nom);
+                if (m != null) menaces.add(m);
+            }
         }
     }
 
