@@ -4,6 +4,7 @@ import android.Manifest;
 import android.app.Activity;
 import android.content.pm.PackageManager;
 import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
 import android.location.Address;
 import android.location.Geocoder;
 import android.location.Location;
@@ -72,77 +73,77 @@ public class RadioActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        int p = (int) (16 * getResources().getDisplayMetrics().density);
-
+        Ui.fenetre(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(Ui.BG);
+        int p = Ui.dp(this, 14);
         root.setPadding(p, p, p, p);
 
-        TextView titre = new TextView(this);
-        titre.setText("📻 Radios du monde");
-        titre.setTextSize(24);
-        titre.setTypeface(null, Typeface.BOLD);
-        root.addView(titre);
+        Ui.ajouter(root, Ui.texte(this, "📻 Radio", 24, Ui.TXT, true), 0);
 
         spPays = new Spinner(this);
-        root.addView(spPays);
+        Ui.styleSpinner(spPays);
+        Ui.ajouter(root, spPays, 8);
 
         spVille = new Spinner(this);
+        Ui.styleSpinner(spVille);
         spVille.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
             public void onItemSelected(AdapterView<?> a, View v, int pos, long id) { filtrer(); }
             public void onNothingSelected(AdapterView<?> a) {}
         });
-        root.addView(spVille);
+        Ui.ajouter(root, spVille, 8);
 
-        Button bPos = new Button(this);
-        bPos.setText("📍 Utiliser ma position");
+        Button bPos = Ui.bouton(this, "📍 Utiliser ma position", Ui.ACCENT);
         bPos.setOnClickListener(v -> localiser());
-        root.addView(bPos);
+        Ui.ajouter(root, bPos, 8);
 
         LinearLayout ligne = new LinearLayout(this);
-        etRecherche = new EditText(this);
-        etRecherche.setHint("Nom de radio…");
-        etRecherche.setSingleLine(true);
+        ligne.setGravity(Gravity.CENTER_VERTICAL);
+        etRecherche = Ui.champ(this, "Nom de radio…");
         etRecherche.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int a, int b2, int c) {}
             public void onTextChanged(CharSequence s, int a, int b2, int c) {}
             public void afterTextChanged(Editable e) { filtrer(); }
         });
-        Button bMonde = new Button(this);
-        bMonde.setText("🌍 Monde");
+        Button bMonde = Ui.bouton(this, "🌍 Monde", Ui.VIOLET);
         bMonde.setOnClickListener(v -> chercherMonde());
-        ligne.addView(etRecherche, new LinearLayout.LayoutParams(0, -2, 1f));
-        ligne.addView(bMonde);
-        root.addView(ligne);
+        ligne.addView(etRecherche, Ui.lp(this, 0, -2, 1f, 0, 0));
+        ligne.addView(bMonde, Ui.lp(this, -2, -2, 0f, 0, 8));
+        Ui.ajouter(root, ligne, 8);
 
-        tvInfo = new TextView(this);
-        tvInfo.setText("Chargement…");
-        root.addView(tvInfo);
+        tvInfo = Ui.texte(this, "Chargement…", 13, Ui.TXT2, false);
+        Ui.ajouter(root, tvInfo, 8);
 
-        tvEtat = new TextView(this);
-        tvEtat.setTextSize(20);
+        LinearLayout carte = new LinearLayout(this);
+        carte.setOrientation(LinearLayout.VERTICAL);
+        carte.setBackground(Ui.rond(Ui.CARD, 18, this));
+        int q = Ui.dp(this, 12);
+        carte.setPadding(q, q, q, q);
+        tvEtat = Ui.texte(this, "Choisissez une radio", 18, Ui.TXT, true);
         tvEtat.setGravity(Gravity.CENTER);
-        tvEtat.setPadding(0, p / 2, 0, p / 2);
-        tvEtat.setText("Choisissez une radio");
-        root.addView(tvEtat);
-
+        carte.addView(tvEtat);
         LinearLayout barre = new LinearLayout(this);
-        barre.setGravity(Gravity.CENTER);
-        Button prec = new Button(this); prec.setText("◀ Fréq −");
-        Button stop = new Button(this); stop.setText("■ Stop");
-        Button suiv = new Button(this); suiv.setText("Fréq + ▶");
+        Button prec = Ui.bouton(this, "◀ Fréq −", Ui.VIOLET);
+        Button stop = Ui.bouton(this, "■ Stop", Ui.ACCENT);
+        Button suiv = Ui.bouton(this, "Fréq + ▶", Ui.VIOLET);
         prec.setOnClickListener(v -> deplacer(-1));
         suiv.setOnClickListener(v -> deplacer(1));
         stop.setOnClickListener(v -> arreter());
-        barre.addView(prec); barre.addView(stop); barre.addView(suiv);
-        root.addView(barre);
+        barre.addView(prec, Ui.lp(this, 0, -2, 1f, 0, 0));
+        barre.addView(stop, Ui.lp(this, 0, -2, 1f, 0, 8));
+        barre.addView(suiv, Ui.lp(this, 0, -2, 1f, 0, 8));
+        carte.addView(barre, Ui.lp(this, -1, -2, 0f, 10, 0));
+        Ui.ajouter(root, carte, 10);
 
         liste = new ListView(this);
         liste.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
-        adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_single_choice);
+        liste.setDivider(new ColorDrawable(0x22FFFFFF));
+        liste.setDividerHeight(1);
+        adapter = Ui.adapterListe(this);
         liste.setAdapter(adapter);
         liste.setOnItemClickListener((a, v, pos, id) -> jouer(pos));
-        root.addView(liste, new LinearLayout.LayoutParams(-1, 0, 1f));
+        root.addView(liste, Ui.lp(this, -1, 0, 1f, 10, 0));
 
         setContentView(root);
         chargerPays();
@@ -205,8 +206,7 @@ public class RadioActivity extends Activity {
                     pays.addAll(tmp);
                     List<String> noms = new ArrayList<>();
                     for (String[] x : pays) noms.add(x[0]);
-                    spPays.setAdapter(new ArrayAdapter<>(this,
-                            android.R.layout.simple_spinner_dropdown_item, noms));
+                    spPays.setAdapter(Ui.adapterSpinner(this, noms));
                     int idx = indexPays("BJ");
                     if (idx >= 0) spPays.setSelection(idx);
                     spPays.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener() {
@@ -264,8 +264,7 @@ public class RadioActivity extends Activity {
                     toutes.addAll(tmp);
                     villes.clear();
                     villes.add(TOUTES);
-                    spVille.setAdapter(new ArrayAdapter<>(this,
-                            android.R.layout.simple_spinner_dropdown_item, villes));
+                    spVille.setAdapter(Ui.adapterSpinner(this, villes));
                     filtrer();
                 });
             } catch (Exception e) {
@@ -333,8 +332,7 @@ public class RadioActivity extends Activity {
         villes.clear();
         villes.add(TOUTES);
         villes.addAll(m.values());
-        spVille.setAdapter(new ArrayAdapter<>(this,
-                android.R.layout.simple_spinner_dropdown_item, villes));
+        spVille.setAdapter(Ui.adapterSpinner(this, villes));
         appliquerVilleEnAttente();
         filtrer();
     }

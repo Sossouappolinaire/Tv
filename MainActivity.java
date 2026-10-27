@@ -2,11 +2,11 @@ package bj.radio;
 
 import android.app.Activity;
 import android.content.Intent;
-import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.view.Gravity;
-import android.widget.Button;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 public class MainActivity extends Activity {
@@ -14,36 +14,57 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
-        float d = getResources().getDisplayMetrics().density;
-        int p = (int) (24 * d);
+        Ui.fenetre(this);
+        int p = Ui.dp(this, 24);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER);
         root.setPadding(p, p, p, p);
 
-        TextView titre = new TextView(this);
-        titre.setText("Radio & TV du monde");
-        titre.setTextSize(28);
-        titre.setTypeface(null, Typeface.BOLD);
+        TextView titre = Ui.texte(this, "RiRe a GOGO", 40, Ui.JAUNE, true);
         titre.setGravity(Gravity.CENTER);
-        titre.setPadding(0, 0, 0, p * 2);
         root.addView(titre);
 
-        root.addView(bouton("📻  Radio", RadioActivity.class, d));
-        root.addView(bouton("📺  Télévision", TvActivity.class, d));
+        TextView sous = Ui.texte(this, "Radio & TV du monde", 16, Ui.TXT2, false);
+        sous.setGravity(Gravity.CENTER);
+        root.addView(sous, Ui.lp(this, -1, -2, 0f, 4, 0));
 
-        setContentView(root);
+        int h = Ui.dp(this, 100);
+        root.addView(carte("📻", "Radio", "Des milliers de radios, par pays et par ville",
+                Ui.ACCENT, RadioActivity.class), Ui.lp(this, -1, h, 0f, 28, 0));
+        root.addView(carte("📺", "Télévision", "Les chaînes qui marchent, en plein écran",
+                Ui.VIOLET, TvActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
+        root.addView(carte("📂", "Sans internet", "Vidéos, box, satellite, TNT, radio FM",
+                0xFF2E9E73, HorsLigneActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
+        root.addView(carte("📘", "Vidéos Facebook", "Télécharger une vidéo en qualité standard ou HD",
+                0xFF1877F2, FacebookActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
+
+        ScrollView sv = new ScrollView(this);
+        sv.setFillViewport(true);
+        sv.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0xFF2E1A6B, Ui.BG}));
+        sv.addView(root);
+        setContentView(sv);
     }
 
-    private Button bouton(String texte, Class<?> cible, float d) {
-        Button bt = new Button(this);
-        bt.setText(texte);
-        bt.setTextSize(24);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-1, (int) (96 * d));
-        lp.bottomMargin = (int) (16 * d);
-        bt.setLayoutParams(lp);
-        bt.setOnClickListener(v -> startActivity(new Intent(this, cible)));
-        return bt;
+    private LinearLayout carte(String emoji, String titre, String desc, int couleur, Class<?> cible) {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.HORIZONTAL);
+        c.setGravity(Gravity.CENTER_VERTICAL);
+        c.setBackground(Ui.rond(couleur, 26, this));
+        int q = Ui.dp(this, 18);
+        c.setPadding(q, q, q, q);
+        c.setClickable(true);
+        c.setOnClickListener(v -> startActivity(new Intent(this, cible)));
+
+        c.addView(Ui.texte(this, emoji, 38, Ui.TXT, false));
+
+        LinearLayout t = new LinearLayout(this);
+        t.setOrientation(LinearLayout.VERTICAL);
+        t.addView(Ui.texte(this, titre, 22, Ui.TXT, true));
+        t.addView(Ui.texte(this, desc, 13, 0xDDFFFFFF, false));
+        c.addView(t, Ui.lp(this, 0, -2, 1f, 0, 14));
+        return c;
     }
 }

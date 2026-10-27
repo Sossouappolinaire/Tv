@@ -4,8 +4,18 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
+    <!-- Pour retrouver une éventuelle appli Radio FM du téléphone -->
+    <queries>
+        <package android:name="com.android.fmradio" />
+        <package android:name="com.mediatek.fmradio" />
+        <package android:name="com.sec.android.app.fm" />
+        <package android:name="com.lge.fmradio" />
+        <package android:name="com.sonyericsson.fmradio" />
+        <package android:name="com.huawei.android.fmradio" />
+    </queries>
+
     <application
-        android:label="Radio &amp; TV du monde"
+        android:label="RiRe a GOGO"
         android:usesCleartextTraffic="true"
         android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
@@ -27,5 +37,24 @@
             android:name=".TvActivity"
             android:exported="false"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+
+        <activity
+            android:name=".HorsLigneActivity"
+            android:exported="false" />
+
+        <activity
+            android:name=".ListeActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+
+        <activity
+            android:name=".FacebookActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>
