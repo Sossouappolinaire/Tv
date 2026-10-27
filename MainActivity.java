@@ -39,11 +39,13 @@ public class MainActivity extends Activity {
                 0xFF2E9E73, HorsLigneActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
         root.addView(carte("📘", "Vidéos Facebook", "Télécharger une vidéo en qualité standard ou HD",
                 0xFF1877F2, FacebookActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
+        root.addView(carte("🛠", "Compiler un projet", "Zip Android → APK à télécharger",
+                0xFF16A085, CompilateurActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
 
         ScrollView sv = new ScrollView(this);
         sv.setFillViewport(true);
         sv.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{0xFF2E1A6B, Ui.BG}));
+                new int[]{Ui.BG_HAUT, Ui.BG}));
         sv.addView(root);
         setContentView(sv);
     }

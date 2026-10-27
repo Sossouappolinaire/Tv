@@ -72,6 +72,8 @@ public class TvActivity extends Activity {
     final List<Chaine> toutes = new ArrayList<>();         // liste d'un pays (non vérifiée)
     final List<Chaine> affichees = new ArrayList<>();
     final List<Chaine> marche = new ArrayList<>();         // chaînes vérifiées
+    final List<Chaine> manuelles = new java.util.concurrent.CopyOnWriteArrayList<>();      // chaînes validées en les jouant (gardées même après une nouvelle analyse)
+    Chaine enLecture = null;
     final Set<String> urlsMarche = new HashSet<>();
     final List<View> cachables = new ArrayList<>();
     List<Chaine> cacheMonde = null;
@@ -209,7 +211,10 @@ public class TvActivity extends Activity {
             }
             @Override
             public void onPlaybackStateChanged(int s) {
-                if (s == Player.STATE_READY) tvEtat.setText(nomActuel + "\n▶ En lecture");
+                if (s == Player.STATE_READY) {
+                    tvEtat.setText(nomActuel + "\n▶ En lecture");
+                    validerChaine();
+                }
                 else if (s == Player.STATE_BUFFERING) tvEtat.setText(nomActuel + "\nChargement…");
             }
         });
@@ -391,6 +396,7 @@ public class TvActivity extends Activity {
             try {
                 String t = get(BASE + "countries/" + code.toLowerCase(Locale.ROOT) + ".m3u");
                 List<Chaine> tmp = t == null ? new ArrayList<>() : parser(t);
+                for (Chaine c : tmp) if (c.cc.isEmpty()) c.cc = code.toUpperCase(Locale.ROOT);
                 runOnUiThread(() -> {
                     if (gen != generation || modeMarche) return;
                     modeMonde = false;
@@ -491,6 +497,29 @@ public class TvActivity extends Activity {
         }
     }
 
+    /** Une chaîne de « Toutes les chaînes » qui démarre vraiment est ajoutée à « Chaînes qui marchent ». */
+    void validerChaine() {
+        Chaine c = enLecture;
+        if (c == null || modeMarche) return;
+        synchronized (marche) {
+            if (urlsMarche.contains(c.url)) return;
+        }
+        Chaine n = new Chaine();
+        n.nom = c.nom;
+        n.url = c.url;
+        n.texte = c.texte;
+        n.cc = c.cc;
+        if (n.cc.isEmpty() && !modeMonde && paysCourants == paysTous) {
+            int pos = spPays.getSelectedItemPosition();
+            if (pos >= 0 && pos < paysTous.size()) n.cc = paysTous.get(pos)[1];
+        }
+        ajouterMarche(n);
+        manuelles.add(n);
+        sauver();
+        sauverManuelles();
+        Toast.makeText(this, "✅ Ajoutée à « Chaînes qui marchent »", Toast.LENGTH_SHORT).show();
+    }
+
     int nbMarche() {
         synchronized (marche) { return marche.size(); }
     }
@@ -525,6 +554,7 @@ public class TvActivity extends Activity {
                     ecrire(cache, t);
                     tous = dedoublonner(parser(t));
                     synchronized (marche) { marche.clear(); urlsMarche.clear(); }
+                    for (Chaine m : new ArrayList<>(manuelles)) ajouterMarche(m);
                     prefs.edit().putInt("index", 0).putBoolean("fini", false).apply();
                 }
                 final List<Chaine> aTester = tous;
@@ -613,21 +643,31 @@ public class TvActivity extends Activity {
         o.close();
     }
 
+    static String versTsv(List<Chaine> l) {
+        StringBuilder sb = new StringBuilder();
+        for (Chaine c : l)
+            sb.append(c.nom.replace('\t', ' ')).append('\t').append(c.cc)
+                    .append('\t').append(c.url).append('\n');
+        return sb.toString();
+    }
+
     void sauver() {
         try {
-            StringBuilder sb = new StringBuilder();
-            synchronized (marche) {
-                for (Chaine c : marche)
-                    sb.append(c.nom.replace('\t', ' ')).append('\t').append(c.cc)
-                            .append('\t').append(c.url).append('\n');
-            }
-            ecrire(new File(getFilesDir(), "marche.tsv"), sb.toString());
+            String t;
+            synchronized (marche) { t = versTsv(marche); }
+            ecrire(new File(getFilesDir(), "marche.tsv"), t);
         } catch (Exception ignored) {}
     }
 
-    void chargerMarche() {
+    void sauverManuelles() {
         try {
-            File f = new File(getFilesDir(), "marche.tsv");
+            ecrire(new File(getFilesDir(), "ajoutees.tsv"), versTsv(manuelles));
+        } catch (Exception ignored) {}
+    }
+
+    void lireTsv(String nomFichier, boolean manuelle) {
+        try {
+            File f = new File(getFilesDir(), nomFichier);
             if (!f.exists()) return;
             for (String l : lire(f).split("\n")) {
                 String[] t = l.split("\t");
@@ -638,8 +678,14 @@ public class TvActivity extends Activity {
                 c.url = t[2];
                 c.texte = norm(c.nom);
                 ajouterMarche(c);
+                if (manuelle) manuelles.add(c);
             }
         } catch (Exception ignored) {}
+    }
+
+    void chargerMarche() {
+        lireTsv("marche.tsv", false);
+        lireTsv("ajoutees.tsv", true);   // chaînes validées à la main
     }
 
     // ---------- Liste affichée ----------
@@ -686,6 +732,7 @@ public class TvActivity extends Activity {
         liste.setItemChecked(i, true);
         liste.smoothScrollToPosition(i);
         Chaine c = affichees.get(i);
+        enLecture = c;
         nomActuel = c.nom;
         tvEtat.setText(nomActuel + "\nConnexion…");
         if (plein) Toast.makeText(this, c.nom, Toast.LENGTH_SHORT).show();

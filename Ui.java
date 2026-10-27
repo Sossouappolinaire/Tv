@@ -17,15 +17,16 @@ import android.widget.TextView;
 
 import java.util.List;
 
-/** Petits outils de style partagés : thème sombre RiRe a GOGO. */
+/** Petits outils de style partagés : thème gris cendre RiRe a GOGO. */
 public class Ui {
-    static final int BG = 0xFF12122B;
-    static final int CARD = 0xFF23244A;
+    static final int BG = 0xFF5C6068;        // fond gris cendre (changez cette valeur pour l'éclaircir ou l'assombrir)
+    static final int BG_HAUT = 0xFF6A6E77;   // haut du dégradé de l'accueil
+    static final int CARD = 0xFF474B53;
     static final int ACCENT = 0xFFFF6B35;
     static final int VIOLET = 0xFF7B4DFF;
     static final int JAUNE = 0xFFFFC857;
     static final int TXT = 0xFFFFFFFF;
-    static final int TXT2 = 0xFFB8B8D8;
+    static final int TXT2 = 0xFFE3E5EA;
 
     static int dp(Context c, int v) {
         return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f);
