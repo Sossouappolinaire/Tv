@@ -41,6 +41,10 @@ public class MainActivity extends Activity {
                 0xFF1877F2, FacebookActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
         root.addView(carte("🛠", "Compiler un projet", "Zip Android → APK à télécharger",
                 0xFF16A085, CompilateurActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
+        root.addView(carte("🛡", "Analyse du téléphone", "Applications suspectes et fichiers cachés à supprimer",
+                0xFFC0392B, AnalyseActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
+        root.addView(carte("💬", "Messages SMS", "Lire vos SMS reçus et envoyés",
+                0xFF2980B9, SmsActivity.class), Ui.lp(this, -1, h, 0f, 14, 0));
 
         ScrollView sv = new ScrollView(this);
         sv.setFillViewport(true);
