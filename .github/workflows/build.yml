@@ -19,6 +19,18 @@ jobs:
           mv ./*.java app/src/main/java/bj/radio/
           mv AndroidManifest.xml app/src/main/AndroidManifest.xml
           mv app.gradle app/build.gradle
+          # Icône de l'application (fichiers à plat à la racine du dépôt)
+          if [ -f ic_launcher.png ] && [ -f ic_launcher_foreground.png ] && [ -f ic_launcher_adaptive.xml ] && [ -f ic_launcher_colors.xml ]; then
+            mkdir -p app/src/main/res/mipmap-xxxhdpi app/src/main/res/mipmap-anydpi-v26
+            mkdir -p app/src/main/res/drawable-xxxhdpi app/src/main/res/values
+            mv ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
+            mv ic_launcher_foreground.png app/src/main/res/drawable-xxxhdpi/ic_launcher_foreground.png
+            mv ic_launcher_adaptive.xml app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml
+            mv ic_launcher_colors.xml app/src/main/res/values/ic_launcher_colors.xml
+          else
+            echo "::warning::Fichiers de l'icône absents du dépôt : compilation sans icône"
+            sed -i '/android:icon=/d;/android:roundIcon=/d' app/src/main/AndroidManifest.xml
+          fi
           find . -path ./.git -prune -o -type f -print | sort
 
       - name: Installer Java 17
@@ -33,7 +45,29 @@ jobs:
           gradle-version: 8.7
 
       - name: Compiler l'APK
-        run: gradle assembleDebug --stacktrace
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace --console=plain 2>&1 | tee build.log
+
+      # Si la compilation échoue : les erreurs sont affichées dans « Annotations »
+      # et dans le résumé du build (page principale du build).
+      - name: Afficher les erreurs
+        if: failure()
+        run: |
+          grep -E "error:|What went wrong|AAPT|Execution failed" build.log | head -15 | while IFS= read -r l; do echo "::error::$l"; done
+          {
+            echo '### Erreurs de compilation'
+            echo '```'
+            grep -E -A3 "error:|What went wrong|AAPT" build.log | head -80
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publier le journal d'erreurs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: journal-erreurs
+          path: build.log
 
       - name: Publier l'APK
         uses: actions/upload-artifact@v4
