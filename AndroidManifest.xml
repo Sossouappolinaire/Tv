@@ -4,6 +4,9 @@
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
+    <!-- Traduction de la voix (vidéos sans sous-titres) : le micro écoute le son de la vidéo -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
     <!-- Analyse du téléphone -->
     <uses-permission android:name="android.permission.READ_SMS" />
 
@@ -18,6 +21,10 @@
         <!-- Voix de synthèse (traduction audio) -->
         <intent>
             <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+        <!-- Reconnaissance vocale (traduction de la voix) -->
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
         </intent>
         <package android:name="com.android.fmradio" />
         <package android:name="com.mediatek.fmradio" />

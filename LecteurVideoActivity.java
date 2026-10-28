@@ -1,14 +1,21 @@
 package bj.radio;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.ActivityInfo;
+import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.provider.MediaStore;
+import android.speech.RecognitionListener;
+import android.speech.RecognizerIntent;
+import android.speech.SpeechRecognizer;
 import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.view.Gravity;
@@ -38,6 +45,7 @@ import androidx.media3.ui.PlayerView;
 import androidx.media3.ui.SubtitleView;
 
 import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
@@ -106,6 +114,17 @@ public class LecteurVideoActivity extends Activity {
     private final Map<String, String> cacheTrad = new HashMap<>();
     private final ExecutorService reseau = Executors.newSingleThreadExecutor();
     private long dernierMessageErreur = 0;
+
+    // ----- traduction de la voix par le micro (vidéos sans sous-titres) -----
+    private static final int REQ_MICRO = 52;
+    private final Handler hUi = new Handler(Looper.getMainLooper());
+    private SpeechRecognizer reco;
+    private boolean microActif = false;
+    private Button bMicro;
+    private long dernierPartielMs = 0;
+    private String dernierPartiel = "";
+    private int erreursMicro = 0;
+    private static volatile String derniereErreur = "";          // dernière raison d'échec des services de traduction
 
     // ----- voix -----
     private TextToSpeech tts;
@@ -202,8 +221,14 @@ public class LecteurVideoActivity extends Activity {
         l2.addView(bPlein, Ui.lp(this, 0, -2, 1f, 0, 8));
         ajouter(l2, 8);
 
+        bMicro = Ui.bouton(this, "🎤 Traduire la voix (micro)", 0xFFD6336C);
+        bMicro.setOnClickListener(v -> basculerMicro());
+        ajouter(bMicro, 8);
+
         ajouter(Ui.texte(this,
                 "La traduction suit les sous-titres de la vidéo (pistes intégrées ou fichier .srt/.vtt chargé). "
+                + "Sans sous-titres (vidéos Facebook, par exemple), utilisez « Traduire la voix » : le micro écoute "
+                + "le son de la vidéo, donc mettez-la sur le haut-parleur, pas au casque. "
                 + "Internet est nécessaire pour traduire.", 12, Ui.TXT2, false), 10);
 
         setContentView(root);
@@ -250,10 +275,18 @@ public class LecteurVideoActivity extends Activity {
             }
         }
         if (!existe) {
-            if (!averti) {
+            if (!averti && !microActif) {
                 averti = true;
-                Toast.makeText(this, "Cette vidéo n'a pas de sous-titres à traduire. "
-                        + "Chargez un fichier .srt / .vtt avec le bouton « Charger ».", Toast.LENGTH_LONG).show();
+                new AlertDialog.Builder(this)
+                        .setTitle("Pas de sous-titres")
+                        .setMessage("Cette vidéo n'a pas de sous-titres à traduire (c'est le cas de la plupart "
+                                + "des vidéos téléchargées de Facebook).\n\nVous pouvez :\n"
+                                + "• traduire la voix avec le micro (son sur haut-parleur, pas au casque) ;\n"
+                                + "• ou charger un fichier .srt / .vtt.")
+                        .setPositiveButton("🎤 Traduire la voix", (d, w) -> basculerMicro())
+                        .setNeutralButton("Charger .srt / .vtt", (d, w) -> choisirSousTitres())
+                        .setNegativeButton("Plus tard", null)
+                        .show();
             }
             return;
         }
@@ -407,7 +440,7 @@ public class LecteurVideoActivity extends Activity {
         final String cle = src + ">" + dst + ">" + texte;
         String deja = cacheTrad.get(cle);
         if (deja != null) { montrer(deja); return; }
-        if (afficher) { overlay.setText("…"); overlay.setVisibility(View.VISIBLE); }
+        if (afficher || microActif) { overlay.setText("…"); overlay.setVisibility(View.VISIBLE); }
         reseau.execute(() -> {
             if (!texte.equals(derniere)) return;             // le sous-titre a déjà changé : on laisse tomber
             final String res = traduireTexte(texte, src, dst);
@@ -423,80 +456,308 @@ public class LecteurVideoActivity extends Activity {
     }
 
     private void erreurReseau(String original) {
-        if (afficher && original.equals(derniere)) { overlay.setText(original); overlay.setVisibility(View.VISIBLE); }
+        if ((afficher || microActif) && original.equals(derniere)) { overlay.setText(original); overlay.setVisibility(View.VISIBLE); }
         long now = System.currentTimeMillis();
         if (now - dernierMessageErreur > 15000) {
             dernierMessageErreur = now;
-            Toast.makeText(this, "Traduction impossible : vérifiez la connexion internet", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "Traduction impossible : vérifiez la connexion internet"
+                    + (derniereErreur.isEmpty() ? "" : "\n(" + derniereErreur + ")"), Toast.LENGTH_LONG).show();
         }
     }
 
     private void montrer(String trad) {
-        if (afficher) { overlay.setText(trad); overlay.setVisibility(View.VISIBLE); }
+        if (afficher || microActif) { overlay.setText(trad); overlay.setVisibility(View.VISIBLE); }
         else overlay.setVisibility(View.GONE);
-        if (voix) parler(trad);
+        if (voix && !microActif) parler(trad);
     }
 
-    /** Traduit avec l'API gratuite de Google ; si elle échoue, essaie l'API gratuite MyMemory (langue d'origine connue). */
+    /**
+     * Traduit avec 3 services gratuits, l'un après l'autre : Google (gtx), Google (extension Chrome),
+     * puis MyMemory. Le premier qui répond gagne ; sinon null (et derniereErreur dit pourquoi).
+     */
     static String traduireTexte(String texte, String src, String dst) {
+        derniereErreur = "";
+        if (src == null || src.isEmpty()) src = "auto";
+        if (src.equals(dst)) return texte;
         String r = appelTraduction(texte, src, dst);
-        if (r == null && !"auto".equals(src)) r = appelMyMemory(texte, src, dst);
+        if (r == null) r = appelGoogleBis(texte, src, dst);
+        if (r == null) r = appelMyMemory(texte, src, dst);
         return r;
     }
 
+    private static String lire(HttpURLConnection c) throws Exception {
+        BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"));
+        StringBuilder sb = new StringBuilder();
+        String l;
+        while ((l = r.readLine()) != null) sb.append(l);
+        r.close();
+        return sb.toString();
+    }
+
+    private static String nettoyerHtml(String s) {
+        try {
+            return android.text.Html.fromHtml(s, android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim();
+        } catch (Exception e) {
+            return s.trim();
+        }
+    }
+
+    /** MyMemory : gratuit, sans clé. « Autodetect » quand la langue d'origine n'est pas choisie. */
     static String appelMyMemory(String texte, String src, String dst) {
         HttpURLConnection c = null;
         try {
+            String sl = "auto".equals(src) ? "Autodetect" : src;
             URL u = new URL("https://api.mymemory.translated.net/get?q=" + URLEncoder.encode(texte, "UTF-8")
-                    + "&langpair=" + URLEncoder.encode(src + "|" + dst, "UTF-8"));
+                    + "&langpair=" + URLEncoder.encode(sl + "|" + dst, "UTF-8"));
             c = (HttpURLConnection) u.openConnection();
             c.setConnectTimeout(8000);
             c.setReadTimeout(10000);
-            if (c.getResponseCode() != 200) return null;
-            BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            String l;
-            while ((l = r.readLine()) != null) sb.append(l);
-            r.close();
-            String res = new org.json.JSONObject(sb.toString()).getJSONObject("responseData").getString("translatedText").trim();
-            if (res.isEmpty() || res.contains("MYMEMORY WARNING")) return null;
+            c.setRequestProperty("User-Agent", "Mozilla/5.0");
+            int code = c.getResponseCode();
+            if (code != 200) { derniereErreur += " MyMemory http " + code; return null; }
+            JSONObject o = new JSONObject(lire(c));
+            String res = nettoyerHtml(o.getJSONObject("responseData").getString("translatedText"));
+            if (res.isEmpty() || res.contains("MYMEMORY WARNING") || res.contains("INVALID")) {
+                derniereErreur += " MyMemory refuse"; return null;
+            }
             return res;
         } catch (Exception e) {
+            derniereErreur += " MyMemory " + e.getClass().getSimpleName();
             return null;
         } finally {
             if (c != null) c.disconnect();
         }
     }
 
-    /** Appel à Google Traduction (service web gratuit non officiel : « sl » = langue d'origine, « tl » = langue voulue). */
+    /** Google Traduction (service web gratuit non officiel : « sl » = langue d'origine, « tl » = langue voulue). */
     static String appelTraduction(String texte, String src, String dst) {
         HttpURLConnection c = null;
         try {
             URL u = new URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=" + src
-                    + "&tl=" + dst + "&dt=t&q=" + URLEncoder.encode(texte, "UTF-8"));
+                    + "&tl=" + dst + "&dt=t&ie=UTF-8&oe=UTF-8&q=" + URLEncoder.encode(texte, "UTF-8"));
             c = (HttpURLConnection) u.openConnection();
             c.setConnectTimeout(8000);
             c.setReadTimeout(10000);
-            c.setRequestProperty("User-Agent", "Mozilla/5.0");
-            if (c.getResponseCode() != 200) return null;
-            BufferedReader r = new BufferedReader(new InputStreamReader(c.getInputStream(), "UTF-8"));
-            StringBuilder sb = new StringBuilder();
-            String l;
-            while ((l = r.readLine()) != null) sb.append(l);
-            r.close();
-            JSONArray segments = new JSONArray(sb.toString()).getJSONArray(0);
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36");
+            int code = c.getResponseCode();
+            if (code != 200) { derniereErreur += " Google http " + code; return null; }
+            JSONArray segments = new JSONArray(lire(c)).getJSONArray(0);
             StringBuilder out = new StringBuilder();
             for (int i = 0; i < segments.length(); i++) {
                 JSONArray s = segments.optJSONArray(i);
                 if (s != null && !s.isNull(0)) out.append(s.getString(0));
             }
             String res = out.toString().trim();
-            return res.isEmpty() ? null : res;
+            if (res.isEmpty()) { derniereErreur += " Google vide"; return null; }
+            return res;
         } catch (Exception e) {
+            derniereErreur += " Google " + e.getClass().getSimpleName();
             return null;
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    /** Deuxième adresse Google (celle de l'extension Chrome) : marche souvent quand la première est refusée. */
+    static String appelGoogleBis(String texte, String src, String dst) {
+        HttpURLConnection c = null;
+        try {
+            URL u = new URL("https://clients5.google.com/translate_a/t?client=dict-chrome-ex&sl=" + src
+                    + "&tl=" + dst + "&q=" + URLEncoder.encode(texte, "UTF-8"));
+            c = (HttpURLConnection) u.openConnection();
+            c.setConnectTimeout(8000);
+            c.setReadTimeout(10000);
+            c.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 Chrome/124.0 Mobile Safari/537.36");
+            int code = c.getResponseCode();
+            if (code != 200) { derniereErreur += " Google2 http " + code; return null; }
+            String corps = lire(c).trim();
+            StringBuilder out = new StringBuilder();
+            if (corps.startsWith("{")) {
+                JSONArray ph = new JSONObject(corps).getJSONArray("sentences");
+                for (int i = 0; i < ph.length(); i++) out.append(ph.getJSONObject(i).optString("trans", ""));
+            } else {
+                JSONArray t = new JSONArray(corps);
+                Object e0 = t.get(0);
+                out.append(e0 instanceof JSONArray ? ((JSONArray) e0).getString(0) : String.valueOf(e0));
+            }
+            String res = out.toString().trim();
+            if (res.isEmpty()) { derniereErreur += " Google2 vide"; return null; }
+            return res;
+        } catch (Exception e) {
+            derniereErreur += " Google2 " + e.getClass().getSimpleName();
+            return null;
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    // ---------- Traduction de la voix (micro) : pour les vidéos SANS sous-titres ----------
+
+    /** Codes de langue de la liste → codes attendus par la reconnaissance vocale d'Android. */
+    private static String codeReco(String c) {
+        switch (c) {
+            case "en": return "en-US";
+            case "fr": return "fr-FR";
+            case "es": return "es-ES";
+            case "pt": return "pt-BR";
+            case "de": return "de-DE";
+            case "it": return "it-IT";
+            case "nl": return "nl-NL";
+            case "ru": return "ru-RU";
+            case "ar": return "ar-SA";
+            case "ja": return "ja-JP";
+            case "ko": return "ko-KR";
+            case "hi": return "hi-IN";
+            case "tr": return "tr-TR";
+            case "sw": return "sw-KE";
+            case "no": return "nb-NO";
+            default: return c;
+        }
+    }
+
+    private void basculerMicro() {
+        if (microActif) { arreterMicro(); return; }
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Reconnaissance vocale absente")
+                    .setMessage("Ce téléphone n'a pas de service de reconnaissance vocale. Installez ou activez "
+                            + "l'application « Google » (ou « Services vocaux Google ») dans le Play Store.")
+                    .setPositiveButton("OK", null).show();
+            return;
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MICRO);
+            return;
+        }
+        demarrerMicro();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        super.onRequestPermissionsResult(code, perms, res);
+        if (code != REQ_MICRO) return;
+        if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) demarrerMicro();
+        else Toast.makeText(this, "Sans l'autorisation du micro, la voix ne peut pas être traduite", Toast.LENGTH_LONG).show();
+    }
+
+    private void demarrerMicro() {
+        if (!active) {
+            active = true;
+            prefs.edit().putBoolean("active", true).apply();
+        }
+        microActif = true;
+        erreursMicro = 0;
+        dernierPartiel = "";
+        derniere = "";
+        bMicro.setText("⏹ Arrêter la traduction de la voix");
+        majAffichageNatif();
+        majStatut();
+        if (player != null && !player.getPlayWhenReady()) player.play();
+        if ("auto".equals(langSource)) {
+            Toast.makeText(this, "Astuce : choisissez la langue de la vidéo dans « Traduction » pour mieux comprendre la voix",
+                    Toast.LENGTH_LONG).show();
+        }
+        stopperVoix();
+        lancerEcoute();
+    }
+
+    private void arreterMicro() {
+        microActif = false;
+        hUi.removeCallbacksAndMessages(null);
+        if (reco != null) {
+            try { reco.cancel(); } catch (Exception ignored) {}
+            try { reco.destroy(); } catch (Exception ignored) {}
+            reco = null;
+        }
+        if (bMicro != null) bMicro.setText("🎤 Traduire la voix (micro)");
+        if (overlay != null) overlay.setVisibility(View.GONE);
+        majAffichageNatif();
+        majStatut();
+    }
+
+    private void lancerEcoute() {
+        if (!microActif) return;
+        try {
+            if (reco == null) {
+                reco = SpeechRecognizer.createSpeechRecognizer(this);
+                reco.setRecognitionListener(new RecognitionListener() {
+                    @Override public void onReadyForSpeech(Bundle p) {}
+                    @Override public void onBeginningOfSpeech() {}
+                    @Override public void onRmsChanged(float v) {}
+                    @Override public void onBufferReceived(byte[] b) {}
+                    @Override public void onEndOfSpeech() {}
+                    @Override public void onEvent(int t, Bundle p) {}
+                    @Override public void onPartialResults(Bundle b) { texteMicro(b, false); }
+                    @Override public void onResults(Bundle b) {
+                        texteMicro(b, true);
+                        relancerEcoute(150);
+                    }
+                    @Override public void onError(int err) { erreurMicro(err); }
+                });
+            }
+            Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+            i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+            i.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+            i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+            i.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, getPackageName());
+            if (!"auto".equals(langSource)) {
+                String tag = codeReco(langSource);
+                i.putExtra(RecognizerIntent.EXTRA_LANGUAGE, tag);
+                i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, tag);
+            }
+            reco.startListening(i);
+        } catch (Exception e) {
+            Toast.makeText(this, "Micro indisponible : " + e.getMessage(), Toast.LENGTH_LONG).show();
+            arreterMicro();
+        }
+    }
+
+    private void relancerEcoute(long delaiMs) {
+        hUi.removeCallbacksAndMessages(null);
+        hUi.postDelayed(this::lancerEcoute, delaiMs);
+    }
+
+    private void texteMicro(Bundle b, boolean fini) {
+        if (!microActif || b == null) return;
+        ArrayList<String> l = b.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+        if (l == null || l.isEmpty()) return;
+        String t = l.get(0) == null ? "" : l.get(0).trim();
+        if (t.isEmpty()) return;
+        erreursMicro = 0;
+        long now = System.currentTimeMillis();
+        // Résultat partiel : on traduit au plus une fois par seconde environ pour ne pas saturer le service.
+        if (!fini && (t.equals(dernierPartiel) || now - dernierPartielMs < 1000)) return;
+        dernierPartiel = t;
+        dernierPartielMs = now;
+        derniere = t;
+        traduire(t);
+    }
+
+    private void erreurMicro(int err) {
+        if (!microActif) return;
+        if (err == SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS) {
+            Toast.makeText(this, "Autorisation du micro manquante", Toast.LENGTH_LONG).show();
+            arreterMicro();
+            return;
+        }
+        // Silence ou rien compris : normal, on réécoute tout de suite.
+        if (err == SpeechRecognizer.ERROR_NO_MATCH || err == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+            relancerEcoute(100);
+            return;
+        }
+        erreursMicro++;
+        if (erreursMicro > 6) {
+            String raison = err == SpeechRecognizer.ERROR_NETWORK || err == SpeechRecognizer.ERROR_NETWORK_TIMEOUT
+                    ? "La reconnaissance vocale a besoin d'internet (ou du pack de langue hors-ligne)."
+                    : "La reconnaissance vocale ne répond pas (code " + err + ").";
+            Toast.makeText(this, raison + " Traduction de la voix arrêtée.", Toast.LENGTH_LONG).show();
+            arreterMicro();
+            return;
+        }
+        if (err == SpeechRecognizer.ERROR_RECOGNIZER_BUSY && reco != null) {
+            try { reco.cancel(); } catch (Exception ignored) {}
+        }
+        relancerEcoute(700);
     }
 
     // ---------- Voix (traduction audio) ----------
@@ -645,8 +906,16 @@ public class LecteurVideoActivity extends Activity {
                     majStatut();
                     stopperVoix();
                     if (active && voix) preparerVoix();
-                    if (!active) overlay.setVisibility(View.GONE);
-                    else if (!derniere.isEmpty()) traduire(derniere);
+                    if (!active) {
+                        overlay.setVisibility(View.GONE);
+                        if (microActif) arreterMicro();
+                    } else {
+                        // Traduction activée après le début de la vidéo : on choisit la piste de sous-titres maintenant.
+                        averti = false;
+                        surPistes(player.getCurrentTracks());
+                        if (!derniere.isEmpty()) traduire(derniere);
+                    }
+                    if (microActif) { arreterMicro(); demarrerMicro(); }   // nouvelle langue → on relance l'écoute
                 })
                 .setNegativeButton("Annuler", null).show();
     }
@@ -672,6 +941,7 @@ public class LecteurVideoActivity extends Activity {
         StringBuilder sb = new StringBuilder("🌐 " + src + " → " + nomLangue(langCible));
         sb.append(afficher ? "  •  sous-titres" : "");
         sb.append(voix ? "  •  voix" : "");
+        sb.append(microActif ? "  •  🎤 écoute du micro" : "");
         tvStatut.setText(sb.toString());
     }
 
@@ -702,6 +972,7 @@ public class LecteurVideoActivity extends Activity {
 
     @Override
     protected void onStop() {
+        if (microActif) arreterMicro();
         if (player != null) player.pause();
         stopperVoix();
         super.onStop();
@@ -709,6 +980,7 @@ public class LecteurVideoActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        arreterMicro();
         reseau.shutdownNow();
         if (tts != null) { tts.stop(); tts.shutdown(); tts = null; }
         if (player != null) { player.release(); player = null; }
