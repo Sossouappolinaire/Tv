@@ -24,9 +24,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
- * « Films Facebook » : les vidéos dont un utilisateur a collé le lien (téléchargées ou non) sont partagées
+ * « Films partagés » : les vidéos dont un utilisateur a collé le lien (téléchargées ou non) sont partagées
  * dans la base Supabase. Ici on les voit avec leur image, leur durée, leurs formats et leurs tailles,
- * et un appui sur « Télécharger » rouvre l'analyse du lien dans « Vidéos Facebook ».
+ * et un appui sur « Télécharger » rouvre l'analyse du lien dans « Télécharger Facebook ».
  */
 public class FilmsFacebookActivity extends Activity {
 
@@ -55,9 +55,9 @@ public class FilmsFacebookActivity extends Activity {
         int p = Ui.dp(this, 16);
         contenu.setPadding(p, p, p, p);
 
-        Ui.ajouter(contenu, Ui.texte(this, "🎞 Films Facebook", 24, Ui.TXT, true), 0);
+        Ui.ajouter(contenu, Ui.texte(this, "🎞 Films partagés", 24, Ui.TXT, true), 0);
         Ui.ajouter(contenu, Ui.texte(this,
-                "Les vidéos Facebook dont quelqu'un a collé le lien dans « Vidéos Facebook » apparaissent ici, "
+                "Les vidéos Facebook dont quelqu'un a collé le lien dans « Télécharger Facebook » apparaissent ici, "
                 + "même si elles n'ont pas été téléchargées. Appuyez sur « Télécharger » pour récupérer l'une d'elles.",
                 13, Ui.TXT2, false), 6);
 
@@ -158,7 +158,7 @@ public class FilmsFacebookActivity extends Activity {
                 decalage += films.length();
                 majPlus(films.length() >= PAR_PAGE);
                 statut.setText(decalage == 0
-                        ? (rq.isEmpty() ? "Aucun film pour l'instant. Collez un lien dans « Vidéos Facebook » : il apparaîtra ici."
+                        ? (rq.isEmpty() ? "Aucun film pour l'instant. Collez un lien dans « Télécharger Facebook » : il apparaîtra ici."
                                 : "Aucun résultat pour « " + rq + " ».")
                         : decalage + " film(s) affiché(s).");
             });
@@ -183,6 +183,12 @@ public class FilmsFacebookActivity extends Activity {
         bPlus.setVisibility(decalage > 0 ? View.VISIBLE : View.GONE);
     }
 
+    /** Pas d'image enregistrée : une icône de film plutôt qu'un carré noir vide. */
+    private void imageAbsente(ImageView img) {
+        img.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        img.setImageResource(android.R.drawable.ic_media_play);
+    }
+
     private View carte(JSONObject f) {
         LinearLayout carte = new LinearLayout(this);
         carte.setOrientation(LinearLayout.VERTICAL);
@@ -200,9 +206,12 @@ public class FilmsFacebookActivity extends Activity {
                 byte[] d = Base64.decode(mini, Base64.DEFAULT);
                 Bitmap bm = BitmapFactory.decodeByteArray(d, 0, d.length);
                 if (bm != null) img.setImageBitmap(bm);
+                else imageAbsente(img);
             } catch (Exception ignore) {
-                // pas d'image
+                imageAbsente(img);
             }
+        } else {
+            imageAbsente(img);
         }
         haut.addView(img, Ui.lp(this, Ui.dp(this, 130), Ui.dp(this, 90), 0f, 0, 0));
 

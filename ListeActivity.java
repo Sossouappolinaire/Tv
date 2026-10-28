@@ -45,7 +45,7 @@ public class ListeActivity extends Activity {
 
     final List<Entree> entrees = new ArrayList<>();
     final List<View> cachables = new ArrayList<>();
-    String mode;
+    String mode, filtre;
     boolean reseau, plein = false;
     int courant = -1, hauteurVideo;
     String nomActuel = "";
@@ -64,6 +64,8 @@ public class ListeActivity extends Activity {
         Ui.fenetre(this);
         reseau = "reseau".equals(getIntent().getStringExtra("mode"));
         mode = reseau ? "reseau" : "fichiers";
+        filtre = getIntent().getStringExtra("filtre");           // « facebook », « autres » ou rien
+        if (filtre == null) filtre = "";
         prefs = getSharedPreferences("locales", MODE_PRIVATE);
         hauteurVideo = Ui.dp(this, 220);
 
@@ -73,14 +75,18 @@ public class ListeActivity extends Activity {
         int p = Ui.dp(this, 14);
         root.setPadding(p, p, p, p);
 
-        ajouter(Ui.texte(this, reseau ? "🏠 Ma box / réseau local" : "🎞 Mes vidéos & audios",
-                22, Ui.TXT, true), 0);
+        String titrePage = reseau ? "🏠 Ma box / réseau local"
+                : "facebook".equals(filtre) ? "📘 Vidéos Facebook téléchargées"
+                : "autres".equals(filtre) ? "🔗 Autres téléchargements" : "🎞 Mes téléchargements";
+        ajouter(Ui.texte(this, titrePage, 22, Ui.TXT, true), 0);
 
         tvInfo = Ui.texte(this, reseau
                 ? "Ajoutez le lien d'un flux de votre box (ex. http://192.168.1.20:8001/…) ou importez "
                   + "sa liste M3U. Fonctionne sans internet, avec le Wi-Fi local."
-                : "Ajoutez des fichiers du téléphone. Les vidéos téléchargées depuis « Sans internet » "
-                  + "apparaissent ici toutes seules.", 13, Ui.TXT2, false);
+                : "facebook".equals(filtre)
+                  ? "Les vidéos téléchargées avec « Télécharger Facebook ». Appui long sur une vidéo pour la supprimer."
+                : "Les vidéos téléchargées par lien direct et les fichiers que vous ajoutez. "
+                  + "Appui long sur une vidéo pour la retirer.", 13, Ui.TXT2, false);
         ajouter(tvInfo, 6);
 
         LinearLayout boutons = new LinearLayout(this);
@@ -91,8 +97,8 @@ public class ListeActivity extends Activity {
             b2.setOnClickListener(v -> dialogListe());
             boutons.addView(b1, Ui.lp(this, 0, -2, 1f, 0, 0));
             boutons.addView(b2, Ui.lp(this, 0, -2, 1f, 0, 8));
-        } else {
-            Button b1 = Ui.bouton(this, "➕ Ajouter des fichiers", Ui.ACCENT);
+        } else if (!"facebook".equals(filtre)) {
+            Button b1 = Ui.bouton(this, "➕ Ajouter des fichiers du téléphone", Ui.ACCENT);
             b1.setOnClickListener(v -> choisirFichiers());
             boutons.addView(b1, Ui.lp(this, 0, -2, 1f, 0, 0));
         }
@@ -159,21 +165,43 @@ public class ListeActivity extends Activity {
 
     void charger() {
         entrees.clear();
-        String s = prefs.getString(mode, "");
-        for (String l : s.split("\n")) {
-            String[] t = l.split("\t");
-            if (t.length >= 2) ajouterEntree(t[0], t[1]);
+        if (!"facebook".equals(filtre)) {                      // fichiers ajoutés à la main
+            String s = prefs.getString(mode, "");
+            for (String l : s.split("\n")) {
+                String[] t = l.split("\t");
+                if (t.length >= 2 && garder(t[0], t[1])) ajouterEntree(t[0], t[1]);
+            }
         }
         if (!reseau) {   // vidéos téléchargées d'avance
             File dossier = getExternalFilesDir(Environment.DIRECTORY_MOVIES);
             File[] fichiers = dossier == null ? null : dossier.listFiles();
             if (fichiers != null)
                 for (File f : fichiers)
-                    if (f.isFile()) ajouterEntree(f.getName(), Uri.fromFile(f).toString());
+                    if (f.isFile() && garder(f.getName(), Uri.fromFile(f).toString()))
+                        ajouterEntree(f.getName(), Uri.fromFile(f).toString());
         }
     }
 
+    /** Une vidéo téléchargée depuis Facebook porte un nom « facebook_… » dans le dossier de l'application. */
+    static boolean estFacebook(String titre, String uri) {
+        return uri.startsWith("file:") && titre.startsWith("facebook_");
+    }
+
+    /** Filtre de l'écran (Facebook / autres) ; un fichier supprimé du téléphone n'est plus affiché. */
+    boolean garder(String titre, String uri) {
+        if (uri.startsWith("file:")) {
+            String chemin = Uri.parse(uri).getPath();
+            if (chemin != null && !new File(chemin).exists()) return false;
+        }
+        if (reseau) return true;
+        boolean fb = estFacebook(titre, uri);
+        if ("facebook".equals(filtre)) return fb;
+        if ("autres".equals(filtre)) return !fb;
+        return true;
+    }
+
     void sauver() {
+        if ("facebook".equals(filtre)) return;                 // cet écran ne touche pas à la liste enregistrée
         StringBuilder sb = new StringBuilder();
         for (Entree e : entrees)
             sb.append(e.titre.replace('\t', ' ').replace('\n', ' ')).append('\t').append(e.uri).append('\n');
@@ -193,7 +221,8 @@ public class ListeActivity extends Activity {
         adapter.clear();
         for (Entree e : entrees) adapter.add(e.titre);
         courant = -1;
-        if (entrees.isEmpty()) tvEtat.setText(reseau ? "Aucune chaîne ajoutée" : "Aucun fichier ajouté");
+        if (entrees.isEmpty()) tvEtat.setText(reseau ? "Aucune chaîne ajoutée"
+                : "facebook".equals(filtre) ? "Aucune vidéo Facebook téléchargée" : "Aucun fichier");
     }
 
     void retirer(int pos) {

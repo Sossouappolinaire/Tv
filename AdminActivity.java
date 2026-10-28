@@ -22,7 +22,8 @@ import org.json.JSONObject;
 public class AdminActivity extends Activity {
 
     private TextView chiffres, statut, comptesTxt;
-    private EditText lien, titre, serie, episode;
+    private EditText lien, titre, serie, episode, cibleEmail, nouveauPasse, canalTv;
+    private JSONArray liste = new JSONArray();
 
     @Override
     protected void onCreate(Bundle b) {
@@ -85,6 +86,31 @@ public class AdminActivity extends Activity {
         comptesTxt = Ui.texte(this, "", 13, Ui.TXT2, false);
         Ui.ajouter(c, comptesTxt, 8);
 
+        Ui.ajouter(c, Ui.texte(this, "📺 TV Kouamé", 18, Ui.TXT, true), 22);
+        Ui.ajouter(c, Ui.texte(this, "Le programme se fabrique TOUT SEUL chaque jour à 00h00 (heure du Bénin), sans répéter de film. Utilisez les boutons ci-dessous seulement pour le refaire ou le remettre à zéro.",
+                13, Ui.TXT2, false), 4);
+        canalTv = Ui.champ(this, "Nom du canal (ex. Kouamé TV)");
+        Ui.ajouter(c, canalTv, 8);
+        Button genTv = Ui.bouton(this, "🔄 Refaire le programme d'aujourd'hui", Ui.VERT);
+        genTv.setOnClickListener(v -> genererTv());
+        Ui.ajouter(c, genTv, 8);
+        Button videTv = Ui.boutonContour(this, "🗑 Remettre TV Kouamé à zéro", Ui.TXT);
+        videTv.setOnClickListener(v -> viderTv());
+        Ui.ajouter(c, videTv, 8);
+
+        Ui.ajouter(c, Ui.texte(this, "Dépanner un compte (série perdue, mot de passe oublié)", 16, Ui.TXT, true), 22);
+        cibleEmail = Ui.champ(this, "Email du compte");
+        cibleEmail.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
+        Ui.ajouter(c, cibleEmail, 8);
+        Button nouvelleSerie = Ui.bouton(this, "🔢 Donner un nouveau numéro de série", Ui.VIOLET);
+        nouvelleSerie.setOnClickListener(v -> nouvelleSerie());
+        Ui.ajouter(c, nouvelleSerie, 8);
+        nouveauPasse = Ui.champ(this, "Nouveau mot de passe (6 caractères minimum)");
+        Ui.ajouter(c, nouveauPasse, 8);
+        Button chgPasse = Ui.bouton(this, "🔑 Changer son mot de passe", Ui.ACCENT);
+        chgPasse.setOnClickListener(v -> changerPasse());
+        Ui.ajouter(c, chgPasse, 8);
+
         ScrollView sv = new ScrollView(this);
         sv.addView(c);
         page.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
@@ -95,7 +121,9 @@ public class AdminActivity extends Activity {
     private void charger() {
         new Thread(() -> {
             final JSONObject s = Supabase.statsAdmin();
-            final JSONArray l = Supabase.comptes();
+            JSONArray tous = Supabase.comptesAdmin();   // avec numéros de série (section 5 de supabase_setup.sql)
+            final JSONArray l = tous != null ? tous : Supabase.comptes();
+            if (tous != null) liste = tous;
             runOnUiThread(() -> {
                 if (s == null) {
                     chiffres.setText("⚠ Statistiques indisponibles : exécutez la section 3 de supabase_setup.sql "
@@ -114,11 +142,76 @@ public class AdminActivity extends Activity {
                         String nom = o.optString("nom", "");
                         if ("null".equals(nom) || nom.isEmpty()) nom = "(sans nom)";
                         sb.append(i + 1).append(". ").append(nom).append(" — ").append(o.optString("email", ""))
+                                .append(o.has("serie") && !"null".equals(o.optString("serie")) ? "\n    série : " + o.optString("serie")
+                                        + (o.optBoolean("confirme") ? "" : " (non confirmé)") : "")
                                 .append("\n    inscrit le ").append(jour(o.optString("cree_le", "")))
                                 .append(" · vu le ").append(jour(o.optString("derniere_connexion", ""))).append("\n");
                     }
                 }
                 comptesTxt.setText(sb.length() == 0 ? "Aucun compte à afficher." : sb.toString());
+            });
+        }).start();
+    }
+
+    private void genererTv() {
+        final String canal = canalTv.getText().toString().trim();
+        statut.setText("Génération…");
+        new Thread(() -> {
+            final JSONObject r = Supabase.adminTvGenerer(canal.isEmpty() ? "Kouamé TV" : canal);
+            runOnUiThread(() -> {
+                if (r == null || !r.optBoolean("ok")) {
+                    statut.setText("⚠ Impossible (section 8 de supabase_setup.sql exécutée ?)");
+                } else if (r.optInt("nombre") == 0) {
+                    statut.setText("⚠ Aucun film avec une durée : ajoutez d'abord des films dans « Films partagés ».");
+                } else {
+                    statut.setText("✅ Programme créé : " + r.optInt("nombre") + " film(s), " + Supabase.duree(r.optLong("duree_ms"))
+                            + (r.optLong("duree_ms") < 86_400_000L ? " (le reste de la journée affichera l'écran TV K : aucun film n'est répété)." : "."));
+                }
+            });
+        }).start();
+    }
+
+    private void viderTv() {
+        statut.setText("Envoi…");
+        new Thread(() -> {
+            final boolean ok = Supabase.adminTvVider();
+            runOnUiThread(() -> statut.setText(ok ? "✅ TV Kouamé remise à zéro : le programme sera refait à la prochaine ouverture." : "⚠ Impossible."));
+        }).start();
+    }
+
+    private String idDe(String email) {
+        for (int i = 0; i < liste.length(); i++) {
+            JSONObject o = liste.optJSONObject(i);
+            if (o != null && email.equalsIgnoreCase(o.optString("email", ""))) return o.optString("id", "");
+        }
+        return "";
+    }
+
+    private void nouvelleSerie() {
+        final String id = idDe(cibleEmail.getText().toString().trim());
+        if (id.isEmpty()) { statut.setText("⚠ Aucun compte avec cet email (actualisez la liste)."); return; }
+        statut.setText("Envoi…");
+        new Thread(() -> {
+            final String s = Supabase.adminNouvelleSerie(id);
+            runOnUiThread(() -> {
+                statut.setText(s == null ? "⚠ Impossible (section 5 de supabase_setup.sql exécutée ?)"
+                        : "✅ Nouveau numéro de série : " + s + "\nCommuniquez-le à l'utilisateur.");
+                if (s != null) charger();
+            });
+        }).start();
+    }
+
+    private void changerPasse() {
+        final String id = idDe(cibleEmail.getText().toString().trim());
+        final String pw = nouveauPasse.getText().toString();
+        if (id.isEmpty()) { statut.setText("⚠ Aucun compte avec cet email (actualisez la liste)."); return; }
+        if (pw.length() < 6) { statut.setText("⚠ Mot de passe : 6 caractères minimum."); return; }
+        statut.setText("Envoi…");
+        new Thread(() -> {
+            final boolean ok = Supabase.adminChangerMotDePasse(id, pw);
+            runOnUiThread(() -> {
+                statut.setText(ok ? "✅ Mot de passe changé. Communiquez-le à l'utilisateur." : "⚠ Changement impossible.");
+                if (ok) nouveauPasse.setText("");
             });
         }).start();
     }
@@ -150,7 +243,7 @@ public class AdminActivity extends Activity {
             runOnUiThread(() -> {
                 bouton.setEnabled(true);
                 if (ok) {
-                    statut.setText("✅ Ajouté à « Films Facebook ».");
+                    statut.setText("✅ Ajouté à « Films partagés ».");
                     lien.setText("");
                     titre.setText("");
                     episode.setText("");

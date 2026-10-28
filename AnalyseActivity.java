@@ -763,7 +763,7 @@ public class AnalyseActivity extends Activity {
         if (auto && chaud) optimiser();
     }
 
-    /** Arrête les applications en arrière-plan, vide le cache de Sossokouamé appel, puis remesure la température. */
+    /** Arrête les applications en arrière-plan, vide le cache de Sossokouamé, puis remesure la température. */
     private void optimiser() {
         tempAvant = lireTemperature();
         int n = 0;

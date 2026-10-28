@@ -28,7 +28,7 @@ final class Supabase {
 
     private Supabase() {}
 
-    /** Dernier message d'erreur lisible (pour l'écran « Films Facebook »). */
+    /** Dernier message d'erreur lisible (pour l'écran « Films partagés »). */
     static volatile String derniereErreur = "";
 
     static boolean configure() {
@@ -77,31 +77,73 @@ final class Supabase {
 
     // ---------- Miniature : image réduite (≈ 320 px) en base64 ----------
 
+    /** Dernière raison pour laquelle l'image n'a pas pu être récupérée (affichée à l'écran). */
+    static volatile String erreurImage = "";
+
+    private static final String UA_TEL_IMG = "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36";
+
+    /** Télécharge l'image brute ; 3 essais avec des en-têtes différents (Facebook refuse parfois selon le navigateur annoncé). */
+    private static byte[] telechargerImage(String urlImage, String ua) {
+        String[][] essais = {
+            { ua, "https://www.facebook.com/" },
+            { UA_TEL_IMG, "https://m.facebook.com/" },
+            { UA_TEL_IMG, null }
+        };
+        for (String[] e : essais) {
+            HttpURLConnection c = null;
+            try {
+                c = (HttpURLConnection) new URL(urlImage).openConnection();
+                c.setInstanceFollowRedirects(true);
+                c.setRequestProperty("User-Agent", e[0] == null ? UA_TEL_IMG : e[0]);
+                c.setRequestProperty("Accept", "image/avif,image/webp,image/jpeg,image/*,*/*;q=0.8");
+                if (e[1] != null) c.setRequestProperty("Referer", e[1]);
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(15000);
+                int code = c.getResponseCode();
+                if (code != 200) {
+                    erreurImage = "Facebook a refusé l'image (http " + code + ")";
+                    continue;
+                }
+                InputStream in = c.getInputStream();
+                ByteArrayOutputStream bo = new ByteArrayOutputStream();
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0 && bo.size() < 4_000_000) bo.write(buf, 0, n);
+                in.close();
+                if (bo.size() > 0) return bo.toByteArray();
+                erreurImage = "L'image reçue est vide";
+            } catch (Exception ex) {
+                erreurImage = "Image inaccessible (" + ex.getClass().getSimpleName() + ")";
+            } finally {
+                if (c != null) c.disconnect();
+            }
+        }
+        return null;
+    }
+
+    /** Renvoie l'image réduite en JPEG base64, ou null (la raison est alors dans erreurImage). */
     static String miniature(String urlImage, String ua) {
-        if (urlImage == null || !urlImage.startsWith("http")) return null;
-        HttpURLConnection c = null;
+        if (urlImage == null || !urlImage.startsWith("http")) {
+            erreurImage = "Facebook n'a donné aucune image pour cette page";
+            return null;
+        }
         try {
-            c = (HttpURLConnection) new URL(urlImage).openConnection();
-            c.setRequestProperty("User-Agent", ua);
-            c.setRequestProperty("Referer", "https://www.facebook.com/");
-            c.setConnectTimeout(10000);
-            c.setReadTimeout(15000);
-            if (c.getResponseCode() != 200) return null;
-            InputStream in = c.getInputStream();
-            ByteArrayOutputStream bo = new ByteArrayOutputStream();
-            byte[] buf = new byte[16384];
-            int n;
-            while ((n = in.read(buf)) > 0 && bo.size() < 4_000_000) bo.write(buf, 0, n);
-            in.close();
-            byte[] data = bo.toByteArray();
+            byte[] data = telechargerImage(urlImage, ua);
+            if (data == null) return null;
             BitmapFactory.Options o = new BitmapFactory.Options();
             o.inJustDecodeBounds = true;
             BitmapFactory.decodeByteArray(data, 0, data.length, o);
-            if (o.outWidth <= 0) return null;
+            if (o.outWidth <= 0) {
+                erreurImage = "Le fichier reçu n'est pas une image";
+                return null;
+            }
             o.inSampleSize = Math.max(1, o.outWidth / 640);
             o.inJustDecodeBounds = false;
             Bitmap b = BitmapFactory.decodeByteArray(data, 0, data.length, o);
-            if (b == null) return null;
+            if (b == null) {
+                erreurImage = "Image illisible";
+                return null;
+            }
             int w = 320, h = Math.max(1, b.getHeight() * w / Math.max(1, b.getWidth()));
             Bitmap p = Bitmap.createScaledBitmap(b, w, h, true);
             ByteArrayOutputStream jo = new ByteArrayOutputStream();
@@ -111,11 +153,11 @@ final class Supabase {
                 p.compress(Bitmap.CompressFormat.JPEG, qualite, jo);
                 qualite -= 15;
             } while (jo.size() > 45000 && qualite > 20);
+            erreurImage = "";
             return Base64.encodeToString(jo.toByteArray(), Base64.NO_WRAP);
-        } catch (Exception e) {
+        } catch (Throwable e) {
+            erreurImage = "Image impossible à préparer (" + e.getClass().getSimpleName() + ")";
             return null;
-        } finally {
-            if (c != null) c.disconnect();
         }
     }
 
@@ -137,13 +179,18 @@ final class Supabase {
 
     /** Ajoute la vidéo à la base partagée. Si le lien y est déjà, rien ne change. À appeler hors du thread principal. */
     static void partager(String lien, String titre, String urlImage, long dureeMs, long tailleSd, long tailleHd, String ua) {
+        partager(lien, titre, urlImage, null, dureeMs, tailleSd, tailleHd, ua);
+    }
+
+    /** Idem, avec une miniature déjà préparée (base64) : évite de retélécharger l'image. */
+    static void partager(String lien, String titre, String urlImage, String miniPrete, long dureeMs, long tailleSd, long tailleHd, String ua) {
         if (!configure() || lien == null || lien.isEmpty()) return;
         HttpURLConnection c = null;
         try {
             JSONObject o = new JSONObject();
             o.put("lien", nettoyerLien(lien));
             if (titre != null && !titre.isEmpty()) o.put("titre", titre.length() > 300 ? titre.substring(0, 300) : titre);
-            String mini = miniature(urlImage, ua);
+            String mini = miniPrete != null ? miniPrete : miniature(urlImage, ua);
             if (mini != null) o.put("miniature", mini);
             if (dureeMs > 0) o.put("duree_ms", dureeMs);
             if (tailleSd > 0) o.put("taille_sd", tailleSd);
@@ -157,11 +204,34 @@ final class Supabase {
             c.getOutputStream().write(corps);
             int code = c.getResponseCode();
             if (code >= 300) derniereErreur = "Envoi refusé (http " + code + ")";
+            // La vidéo existait peut-être déjà SANS image : on complète seulement si la miniature est vide
+            // (nécessite la section 7 de supabase_setup.sql ; sans elle, l'envoi est simplement refusé et ignoré).
+            completerChamps(nettoyerLien(lien), titre, mini);
         } catch (Exception e) {
             derniereErreur = "Envoi impossible : " + e.getClass().getSimpleName();
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    /** Complète le titre et/ou l'image d'une vidéo déjà enregistrée sans eux (jamais d'écrasement : filtre « est vide »). */
+    private static void completerChamps(String lienPropre, String titre, String mini) {
+        String avant = derniereErreur;
+        try {
+            String lienF = "lien=eq." + java.net.URLEncoder.encode(lienPropre, "UTF-8");
+            if (mini != null) {
+                rest("PATCH", "films_facebook?" + lienF + "&miniature=is.null",
+                        new JSONObject().put("miniature", mini).toString(), "return=minimal");
+            }
+            if (titre != null && !titre.isEmpty()) {
+                String t = titre.length() > 300 ? titre.substring(0, 300) : titre;
+                rest("PATCH", "films_facebook?" + lienF + "&titre=is.null",
+                        new JSONObject().put("titre", t).toString(), "return=minimal");
+            }
+        } catch (Exception ignore) {
+            // pas grave : ce sera complété une prochaine fois
+        }
+        derniereErreur = avant;   // un refus ici (section 7 non appliquée) ne doit pas masquer l'état de l'envoi
     }
 
     // ---------- Lecture : liste des films partagés ----------
@@ -302,7 +372,63 @@ final class Supabase {
         }
     }
 
-    /** Ajoute un lien Facebook à la liste « Films Facebook » (titre, série et épisode facultatifs). */
+    /** Comptes avec leur numéro de série (fonction admin_comptes, réservée à l'administrateur). */
+    static JSONArray comptesAdmin() {
+        try {
+            String r = rest("POST", "rpc/admin_comptes", "{}", null);
+            return r == null ? null : new JSONArray(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Attribue un nouveau numéro de série au compte ; renvoie la série, ou null. */
+    static String adminNouvelleSerie(String idCompte) {
+        try {
+            String r = rest("POST", "rpc/admin_nouvelle_serie", new JSONObject().put("p_uid", idCompte).toString(), null);
+            return r == null ? null : new JSONObject(r).optString("serie", null);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Définit un nouveau mot de passe pour le compte (les sessions ouvertes sont fermées). */
+    static boolean adminChangerMotDePasse(String idCompte, String nouveau) {
+        try {
+            String r = rest("POST", "rpc/admin_changer_mot_de_passe",
+                    new JSONObject().put("p_uid", idCompte).put("p_nouveau", nouveau).toString(), null);
+            return r != null && new JSONObject(r).optBoolean("ok");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Planning de TV Kouamé : heure du serveur (maintenant_ms) + programmes dans l'ordre. */
+    static JSONObject tvPlanning() {
+        try {
+            String r = rest("POST", "rpc/tv_planning", "{}", null);
+            return r == null ? null : new JSONObject(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Admin : remplit automatiquement la journée de TV Kouamé avec les films qui ont une durée. */
+    static JSONObject adminTvGenerer(String canal) {
+        try {
+            String r = rest("POST", "rpc/admin_tv_generer", new JSONObject().put("p_canal", canal).toString(), null);
+            return r == null ? null : new JSONObject(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    static boolean adminTvVider() {
+        String r = rest("POST", "rpc/admin_tv_vider", "{}", null);
+        return r != null;
+    }
+
+    /** Ajoute un lien Facebook à la liste « Films partagés » (titre, série et épisode facultatifs). */
     static boolean ajouterFilm(String lien, String titre, String serie, int episode) {
         try {
             JSONObject o = new JSONObject().put("lien", nettoyerLien(lien.trim()));

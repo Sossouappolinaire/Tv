@@ -46,7 +46,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * « Mes vidéos » : toutes les vidéos du téléphone (MediaStore), rangées par dossier
+ * « Vidéos de ma galerie » : toutes les vidéos du téléphone (MediaStore), rangées par dossier
  * ou triées (récentes, nom, taille, durée). Un tap ouvre le lecteur avec traduction.
  */
 public class VideosActivity extends Activity {
@@ -84,7 +84,7 @@ public class VideosActivity extends Activity {
         int p = Ui.dp(this, 14);
         root.setPadding(p, p, p, p);
 
-        Ui.ajouter(root, Ui.texte(this, "🎬 Mes vidéos", 24, Ui.TXT, true), 0);
+        Ui.ajouter(root, Ui.texte(this, "🖼 Vidéos de ma galerie", 24, Ui.TXT, true), 0);
         etat = Ui.texte(this, "Chargement…", 13, Ui.TXT2, false);
         Ui.ajouter(root, etat, 4);
 

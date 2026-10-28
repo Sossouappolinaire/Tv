@@ -32,20 +32,27 @@ public class MainActivity extends Activity {
             return;
         }
 
+        // TV Kouamé : notification « Programme du jour » chaque jour à 00h00 (heure du Bénin)
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{"android.permission.POST_NOTIFICATIONS"}, 11);
+        }
+        ProgrammeAlarme.planifier(this);
+
         int p = Ui.dp(this, 14);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setPadding(p, p * 2, p, p);
 
-        TextView titre = Ui.texte(this, "Sossokouamé appel", 34, Ui.JAUNE, true);
+        TextView titre = Ui.texte(this, "Sossokouamé", 34, Ui.JAUNE, true);
         titre.setGravity(Gravity.CENTER);
         root.addView(titre);
         animations.add(Ui.titreColore(titre));
         Ui.entree(titre, 0);
 
         String nom = Compte.nom();
-        TextView sous = Ui.texte(this, nom.isEmpty() ? "Radio & TV du monde" : "Bonjour " + nom + " 👋", 16, Ui.TXT2, false);
+        TextView sous = Ui.texte(this, nom.isEmpty() ? "Radio, TV & vidéos" : "Bonjour " + nom + " 👋", 16, Ui.TXT2, false);
         sous.setGravity(Gravity.CENTER);
         root.addView(sous, Ui.lp(this, -1, -2, 0f, 4, 0));
         Ui.entree(sous, 1);
@@ -55,11 +62,11 @@ public class MainActivity extends Activity {
         root.addView(mosaique, Ui.lp(this, -1, -2, 0f, 20, 0));
 
         tuile("📻", "Radio", "Radios par pays et par ville", Ui.ACCENT, 0xFFFF3D6E, RadioActivity.class);
-        tuile("📺", "Télévision", "Les chaînes qui marchent, en plein écran", Ui.VIOLET, 0xFF3A7BFF, TvActivity.class);
-        tuile("📂", "Sans internet", "Vidéos, box, satellite, TNT, radio FM", 0xFF2E9E73, 0xFF9BCB3C, HorsLigneActivity.class);
-        tuile("🎬", "Mes vidéos", "Vidéos du téléphone, rangées, avec traduction", 0xFFD6336C, 0xFFFF8A3D, VideosActivity.class);
-        tuile("📘", "Vidéos Facebook", "Télécharger en qualité standard ou HD", 0xFF1877F2, 0xFF5B3DF5, FacebookActivity.class);
-        tuile("🎞", "Films Facebook", "Vidéos partagées par les autres utilisateurs", 0xFF0E5FCB, 0xFF12B5CB, FilmsFacebookActivity.class);
+        tuile("📺", "Télévision", "Chaînes du monde, en plein écran", Ui.VIOLET, 0xFF3A7BFF, TvActivity.class);
+        tuile("📡", "TV Kouamé", "Programme du jour, nouveau chaque jour à 00h00", 0xFFE91E63, 0xFFFF9800, TvKouameActivity.class);
+        tuile("📘", "Télécharger Facebook", "Une vidéo Facebook, en qualité standard ou HD", 0xFF1877F2, 0xFF5B3DF5, FacebookActivity.class);
+        tuile("🎞", "Films partagés", "Les films ajoutés par les utilisateurs", 0xFF0E5FCB, 0xFF12B5CB, FilmsFacebookActivity.class);
+        tuile("📥", "Téléchargements", "Facebook, galerie et liens, classés à part", 0xFF2E9E73, 0xFF9BCB3C, HorsLigneActivity.class);
         tuile("🛠", "Compiler un projet", "Zip Android → APK à télécharger", 0xFF16A085, 0xFF2D8CFF, CompilateurActivity.class);
         tuile("🛡", "Analyse du téléphone", "Fichiers malveillants et cachés", 0xFFC0392B, 0xFFE67E22, AnalyseActivity.class);
         tuile("💬", "Messages SMS", "Lire vos SMS reçus et envoyés", 0xFF2980B9, 0xFF8E44AD, SmsActivity.class);

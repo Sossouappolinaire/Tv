@@ -12,7 +12,7 @@ import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
 /**
- * Compte utilisateur (inscription, connexion, mot de passe oublié) via Supabase Auth,
+ * Compte utilisateur (inscription avec numéro de série, confirmation, connexion, mot de passe oublié),
  * et enregistrement du profil dans la table « profils » (voir supabase_setup.sql).
  *
  * Toutes les méthodes réseau sont à appeler HORS du thread principal.
@@ -25,8 +25,15 @@ final class Compte {
     static final class Resultat {
         final boolean ok;
         final String message;
-        Resultat(boolean ok, String message) { this.ok = ok; this.message = message; }
+        /** Étape suivante à afficher quand ok = false mais que ce n'est pas une erreur : « confirmation » ou « connexion ». */
+        final String suite;
+        Resultat(boolean ok, String message) { this(ok, message, null); }
+        Resultat(boolean ok, String message, String suite) { this.ok = ok; this.message = message; this.suite = suite; }
     }
+
+    /** Dernier numéro de série et dernier code reçus de la base (affichés dans la zone de message). */
+    static volatile String derniereSerie = "";
+    static volatile String dernierCode = "";
 
     private static final String PREFS = "compte";
     private static SharedPreferences prefs;
@@ -104,23 +111,53 @@ final class Compte {
 
     // ------------------------------------------------------------------ actions
 
+    /**
+     * Inscription : la base crée le compte, un NOUVEAU numéro de série (propre à ce compte) et un code
+     * de confirmation. Aucun e-mail n'est envoyé : série et code sont affichés dans l'application.
+     */
     static Resultat inscrire(String nom, String email, String motDePasse) {
         try {
-            JSONObject corps = new JSONObject()
-                    .put("email", email)
-                    .put("password", motDePasse)
-                    .put("data", new JSONObject().put("nom", nom));
-            Rep r = appeler("POST", "/auth/v1/signup", corps, null);
-            if (r.code >= 300) return new Resultat(false, erreur(r));
-            if (r.json != null && r.json.has("access_token")) {
-                enregistrerSession(r.json);
-                prefs.edit().putString("nom", nom).apply();
-                enregistrerProfil();
-                return new Resultat(true, "Compte créé. Bienvenue " + nom + " !");
+            JSONObject j = rpc("inscrire_compte", new JSONObject()
+                    .put("p_nom", nom).put("p_email", email).put("p_passe", motDePasse));
+            if (j == null || !j.optBoolean("ok")) return new Resultat(false, erreurRpc(j));
+            derniereSerie = j.optString("serie");
+            dernierCode = j.optString("code");
+            return new Resultat(false, "Compte créé ✔ Voici votre code de confirmation : " + dernierCode
+                    + "\nSaisissez-le ci-dessus puis appuyez sur « Confirmer mon compte ».", "confirmation");
+        } catch (Exception e) {
+            return new Resultat(false, echec(e));
+        }
+    }
+
+    /** Confirme le compte (e-mail + série + code) puis connecte l'utilisateur si le mot de passe est connu. */
+    static Resultat confirmer(String email, String serie, String code, String motDePasse) {
+        try {
+            JSONObject j = rpc("confirmer_compte", new JSONObject()
+                    .put("p_email", email).put("p_serie", serie).put("p_code", code));
+            if (j == null || !j.optBoolean("ok")) return new Resultat(false, erreurRpc(j));
+            if (motDePasse != null && !motDePasse.isEmpty()) {
+                Resultat c = connecter(email, motDePasse);
+                if (c.ok) return new Resultat(true, "Compte confirmé. Bienvenue !");
             }
-            // Confirmation par email exigée par le projet Supabase.
-            return new Resultat(false, "Compte créé ✔ Ouvrez le message reçu à " + email
-                    + " pour confirmer votre adresse, puis connectez-vous.");
+            return new Resultat(false, "Compte confirmé ✔ Connectez-vous avec votre email et votre mot de passe.", "connexion");
+        } catch (Exception e) {
+            return new Resultat(false, echec(e));
+        }
+    }
+
+    /**
+     * Demande un code (objet = « confirmation » ou « reinitialisation »). La base exige l'e-mail ET le
+     * numéro de série du compte ; le code est ensuite lisible dans Compte.dernierCode.
+     */
+    static Resultat demanderCode(String email, String serie, String objet) {
+        try {
+            JSONObject j = rpc("demander_code", new JSONObject()
+                    .put("p_email", email).put("p_serie", serie).put("p_objet", objet));
+            if (j == null || !j.optBoolean("ok")) return new Resultat(false, erreurRpc(j));
+            dernierCode = j.optString("code");
+            String duree = "reinitialisation".equals(objet) ? "10 minutes" : "1 heure";
+            return new Resultat(true, "Votre code : " + dernierCode + " (valable " + duree + ").\n"
+                    + "Saisissez-le ci-dessus" + ("reinitialisation".equals(objet) ? " avec votre nouveau mot de passe." : "."));
         } catch (Exception e) {
             return new Resultat(false, echec(e));
         }
@@ -141,30 +178,15 @@ final class Compte {
         }
     }
 
-    /** Envoie par email un code à 6 chiffres pour choisir un nouveau mot de passe. */
-    static Resultat envoyerCode(String email) {
+    /** Mot de passe oublié : e-mail + numéro de série + code + nouveau mot de passe ; l'utilisateur est ensuite connecté. */
+    static Resultat changerMotDePasse(String email, String serie, String code, String nouveau) {
         try {
-            Rep r = appeler("POST", "/auth/v1/recover", new JSONObject().put("email", email), null);
-            if (r.code >= 300) return new Resultat(false, erreur(r));
-            return new Resultat(true, "Un code vient d'être envoyé à " + email + ". Regardez aussi les courriers indésirables.");
-        } catch (Exception e) {
-            return new Resultat(false, echec(e));
-        }
-    }
-
-    /** Vérifie le code reçu par email puis change le mot de passe ; l'utilisateur est ensuite connecté. */
-    static Resultat changerMotDePasse(String email, String code, String nouveau) {
-        try {
-            JSONObject v = new JSONObject().put("type", "recovery").put("email", email).put("token", code);
-            Rep r = appeler("POST", "/auth/v1/verify", v, null);
-            if (r.code != 200 || r.json == null || !r.json.has("access_token"))
-                return new Resultat(false, "Code incorrect ou expiré. Demandez un nouveau code.");
-            String jeton = r.json.optString("access_token");
-            Rep m = appeler("PUT", "/auth/v1/user", new JSONObject().put("password", nouveau), jeton);
-            if (m.code >= 300) return new Resultat(false, erreur(m));
-            enregistrerSession(r.json);
-            enregistrerProfil();
-            return new Resultat(true, "Mot de passe changé. Vous êtes connecté.");
+            JSONObject j = rpc("reinitialiser_mot_de_passe", new JSONObject()
+                    .put("p_email", email).put("p_serie", serie).put("p_code", code).put("p_nouveau", nouveau));
+            if (j == null || !j.optBoolean("ok")) return new Resultat(false, erreurRpc(j));
+            Resultat c = connecter(email, nouveau);
+            if (c.ok) return new Resultat(true, "Mot de passe changé. Vous êtes connecté.");
+            return new Resultat(false, "Mot de passe changé ✔ Connectez-vous.", "connexion");
         } catch (Exception e) {
             return new Resultat(false, echec(e));
         }
@@ -256,6 +278,38 @@ final class Compte {
         }
     }
 
+    /** Appelle une fonction de la base (rpc) avec la clé publique ; renvoie la réponse JSON, ou null. */
+    private static JSONObject rpc(String fonction, JSONObject corps) throws Exception {
+        Rep r = appeler("POST", "/rest/v1/rpc/" + fonction, corps, null);
+        if (r.code == 404) {
+            JSONObject o = new JSONObject();
+            o.put("ok", false).put("erreur", "base_non_prete");
+            return o;
+        }
+        if (r.code >= 300 && r.json == null) throw new java.io.IOException("http " + r.code);
+        return r.json;
+    }
+
+    /** Traduit le code d'erreur renvoyé par la base en message lisible. */
+    private static String erreurRpc(JSONObject j) {
+        String e = j == null ? "" : j.optString("erreur", "");
+        switch (e) {
+            case "email_invalide": return "Adresse email invalide.";
+            case "nom_invalide": return "Nom invalide (2 à 100 caractères).";
+            case "mot_de_passe_faible": return "Mot de passe : 6 caractères minimum.";
+            case "email_existe": return "Un compte existe déjà avec cet email : connectez-vous.";
+            case "trop_de_demandes": return "Trop d'inscriptions en ce moment. Réessayez plus tard.";
+            case "incorrect": return "Email ou numéro de série incorrect.";
+            case "bloque": return "Trop d'essais. Patientez 15 minutes puis réessayez.";
+            case "deja_confirme": return "Ce compte est déjà confirmé : connectez-vous.";
+            case "non_confirme": return "Ce compte n'est pas encore confirmé : confirmez-le d'abord.";
+            case "code_expire": return "Code expiré ou absent : demandez un nouveau code.";
+            case "code_incorrect": return "Code incorrect.";
+            case "base_non_prete": return "Base non prête : exécutez la section 5 de supabase_setup.sql dans Supabase.";
+            default: return "Erreur : réessayez dans un instant.";
+        }
+    }
+
     /** Traduit l'erreur du serveur en message lisible en français. */
     private static String erreur(Rep r) {
         String code = "", msg = "";
@@ -265,7 +319,7 @@ final class Compte {
         }
         String m = msg.toLowerCase();
         if (code.equals("invalid_credentials") || m.contains("invalid login")) return "Email ou mot de passe incorrect.";
-        if (code.equals("email_not_confirmed") || m.contains("not confirmed")) return "Adresse email non confirmée : ouvrez le message de confirmation reçu par email.";
+        if (code.equals("email_not_confirmed") || m.contains("not confirmed")) return "Compte non confirmé : appuyez sur « Confirmer mon compte » et saisissez votre code.";
         if (code.equals("user_already_exists") || m.contains("already registered")) return "Un compte existe déjà avec cet email : connectez-vous.";
         if (code.equals("weak_password") || m.contains("password should")) return "Mot de passe trop faible : 6 caractères minimum.";
         if (code.equals("over_email_send_rate_limit") || code.equals("over_request_rate_limit") || r.code == 429)

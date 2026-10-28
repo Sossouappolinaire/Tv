@@ -151,7 +151,7 @@ public class LecteurVideoActivity extends Activity {
         voix = prefs.getBoolean("voix", false);
         baisser = prefs.getBoolean("baisser", true);
 
-        // choix fait dans « Mes vidéos » : tout / audio / soustitres / aucun
+        // choix fait dans « Vidéos de ma galerie » : tout / audio / soustitres / aucun
         String mode = getIntent().getStringExtra("mode");
         if (mode != null) {
             if ("aucun".equals(mode)) {

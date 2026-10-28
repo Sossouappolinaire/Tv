@@ -30,7 +30,7 @@ import android.widget.TextView;
 
 import java.util.List;
 
-/** Petits outils de style partagés : thème gris cendre « Sossokouamé appel » (dégradés, boutons, animations). */
+/** Petits outils de style partagés : thème gris cendre « Sossokouamé » (dégradés, boutons, animations). */
 public class Ui {
     static final int BG = 0xFF5C6068;        // fond gris cendre (changez cette valeur pour l'éclaircir ou l'assombrir)
     static final int BG_HAUT = 0xFF6A6E77;   // haut du dégradé de l'accueil

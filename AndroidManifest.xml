@@ -3,6 +3,10 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- TV Kouamé : notification « Programme du jour » à 00h00 (heure du Bénin) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <!-- Verrouillage par empreinte digitale -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
@@ -46,7 +50,7 @@
 
     <application
         android:name=".App"
-        android:label="Sossokouamé appel"
+        android:label="Sossokouamé"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
@@ -61,6 +65,16 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".ProgrammeAlarme"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="bj.radio.PROGRAMME_MINUIT" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name=".AuthActivity"
@@ -125,6 +139,11 @@
         <activity
             android:name=".FilmsFacebookActivity"
             android:exported="false" />
+
+        <activity
+            android:name=".TvKouameActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
 
         <activity
             android:name=".FacebookActivity"

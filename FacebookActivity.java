@@ -7,6 +7,8 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -36,6 +38,7 @@ import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.MediaController;
 import android.widget.ProgressBar;
@@ -68,11 +71,11 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Ecran « Vidéos Facebook » : analyse d'un lien, choix du format (SD / HD),
+ * Ecran « Télécharger Facebook » : analyse d'un lien, choix du format (SD / HD),
  * confirmation, puis téléchargement avec barre de progression en bas de l'écran.
  *
  * Fichier autonome (aucune dépendance à Ui.java). Les vidéos sont enregistrées dans
- * getExternalFilesDir(Movies), le même dossier que « Sans internet > Mes vidéos & audios ».
+ * getExternalFilesDir(Movies), le même dossier que « Téléchargements > Vidéos Facebook téléchargées ».
  */
 public class FacebookActivity extends Activity {
 
@@ -119,7 +122,8 @@ public class FacebookActivity extends Activity {
         String sd, hd, uaSd, uaHd;
         String dashV, dashA, uaDash;
         long dureeMs = 0;   // durée de la vidéo (0 = inconnue)
-        String titre, image;   // titre et image de la page (partagés dans « Films Facebook »)
+        String titre, image;   // titre et image de la page (partagés dans « Films partagés »)
+        volatile String mini;  // image réduite (base64) déjà préparée pour l'affichage et le partage
     }
 
     /** Ce qu'on va télécharger. audio != null : image et son séparés, à rassembler. */
@@ -342,7 +346,7 @@ public class FacebookActivity extends Activity {
         entete.setPadding(dp(12), dp(10), dp(16), dp(10));
         Button retour = bouton("← Retour", C_CARD);
         retour.setOnClickListener(v -> onBackPressed());
-        TextView titre = texte("Vidéos Facebook", 20, true);
+        TextView titre = texte("📘 Télécharger Facebook", 20, true);
         titre.setPadding(dp(14), 0, 0, 0);
         entete.addView(retour, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -360,10 +364,10 @@ public class FacebookActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView intro = texte("Collez le lien d'une vidéo publique, ou partagez-la depuis Facebook "
-                + "vers Sossokouamé appel. Téléchargez seulement vos propres vidéos ou celles dont "
+                + "vers Sossokouamé. Téléchargez seulement vos propres vidéos ou celles dont "
                 + "l'auteur est d'accord, et respectez les conditions de Facebook.\n\n"
                 + "ℹ Chaque lien analysé (téléchargé ou non) est ajouté, avec son image, sa durée et sa taille, "
-                + "à « Films Facebook » : les autres utilisateurs de l'application le voient et peuvent le télécharger.", 13, false);
+                + "à « Films partagés » : les autres utilisateurs de l'application le voient et peuvent le télécharger.", 13, false);
         intro.setTextColor(C_TXT2);
         contenu.addView(intro, lp(-1, -2, 0, 0, 0, 12));
 
@@ -646,15 +650,17 @@ public class FacebookActivity extends Activity {
         if (html == null) return;
         if (r.dureeMs <= 0) r.dureeMs = extraireDuree(html);
         if (r.image == null) r.image = meta(html, "og:image");
+        if (r.image == null) r.image = meta(html, "og:image:secure_url");
+        if (r.image == null) r.image = meta(html, "twitter:image");
         if (r.titre == null) {
-            String t = meta(html, "og:title");
-            if (t != null) {
-                try {
-                    t = android.text.Html.fromHtml(t, android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim();
-                } catch (Exception ignore) {
-                    // on garde le texte brut
+            // og:title, puis la balise <title>, puis le début de la description : on garde le premier titre « utile »
+            String[] candidats = { meta(html, "og:title"), balisetitle(html), meta(html, "og:description"), meta(html, "description") };
+            for (String t : candidats) {
+                String net = nettoyerTitre(t);
+                if (net != null) {
+                    r.titre = net;
+                    break;
                 }
-                if (!t.isEmpty()) r.titre = t;
             }
         }
         String sd = premier(html, CLES_SD);
@@ -694,14 +700,48 @@ public class FacebookActivity extends Activity {
         }
     }
 
-    /** Valeur d'une balise <meta property="..." content="..."> (og:image, og:title…). */
+    /** Titre exploitable, ou null si vide / générique (page de connexion Facebook…). */
+    private String nettoyerTitre(String t) {
+        if (t == null) return null;
+        try {
+            t = android.text.Html.fromHtml(t, android.text.Html.FROM_HTML_MODE_LEGACY).toString();
+        } catch (Exception ignore) {
+            // on garde le texte brut
+        }
+        t = t.replace('\u00a0', ' ').replaceAll("\\s+", " ").trim();
+        if (t.length() > 120) {
+            int coupe = t.lastIndexOf(' ', 120);
+            t = t.substring(0, coupe > 60 ? coupe : 120).trim() + "…";
+        }
+        if (t.length() < 3) return null;
+        String m = t.toLowerCase(Locale.ROOT);
+        String[] generiques = { "facebook", "log in", "login", "log into", "sign up", "se connecter", "connexion", "inscrivez",
+                "vous devez vous connecter", "you must log in", "isn't available", "n'est pas disponible", "watch" };
+        for (String g : generiques) {
+            if (m.equals(g) || (g.length() > 6 && m.contains(g))) return null;
+        }
+        return t;
+    }
+
+    private String balisetitle(String html) {
+        Matcher m = Pattern.compile("<title[^>]*>([^<]{1,400})</title>", Pattern.CASE_INSENSITIVE).matcher(html);
+        return m.find() ? decoder(m.group(1)) : null;
+    }
+
+    private static final Pattern CONTENT_ANY = Pattern.compile("content\\s*=\\s*(?:\"([^\"]*)\"|'([^']*)')", Pattern.CASE_INSENSITIVE);
+
+    /** Valeur d'une balise <meta property="..." content="..."> (og:image, og:title…), guillemets simples ou doubles. */
     private String meta(String html, String prop) {
+        Pattern nom = Pattern.compile("(?:property|name)\\s*=\\s*[\"']" + Pattern.quote(prop) + "[\"']", Pattern.CASE_INSENSITIVE);
         Matcher mt = META.matcher(html);
         while (mt.find()) {
             String tag = mt.group();
-            if (!tag.contains("\"" + prop + "\"")) continue;
-            Matcher mc = CONTENT.matcher(tag);
-            if (mc.find()) return decoder(mc.group(1));
+            if (!nom.matcher(tag).find()) continue;
+            Matcher mc = CONTENT_ANY.matcher(tag);
+            if (mc.find()) {
+                String v = mc.group(1) != null ? mc.group(1) : mc.group(2);
+                if (v != null && !v.isEmpty()) return decoder(v);
+            }
         }
         return null;
     }
@@ -919,6 +959,7 @@ public class FacebookActivity extends Activity {
         final String lienPartage = dernierLien;
         if (r.sd != null || r.hd != null) {
             tvEtat.setText("✅ Vidéo trouvée. Regardez l'aperçu, puis choisissez le format :");
+            ajouterVignette(r);
             ajouterApercu(r.sd != null ? r.sd : r.hd, r.sd != null ? r.uaSd : r.uaHd, r.dureeMs);
             final Plan psd = r.sd != null ? new Plan("sd", r.sd, null, r.uaSd) : null;
             final Plan phd = r.hd != null ? new Plan("hd", r.hd, null, r.uaHd) : null;
@@ -936,8 +977,8 @@ public class FacebookActivity extends Activity {
             new Thread(() -> {
                 if (psd != null) psd.tailleV = sonderTaille(psd.url, psd.ua);
                 if (phd != null) phd.tailleV = sonderTaille(phd.url, phd.ua);
-                // Partage dans la base « Films Facebook » : image, durée, formats et tailles (même sans téléchargement)
-                Supabase.partager(lienPartage, r.titre, r.image, r.dureeMs,
+                // Partage dans la base « Films partagés » : image, durée, formats et tailles (même sans téléchargement)
+                Supabase.partager(lienPartage, r.titre, r.image, r.mini, r.dureeMs,
                         psd != null ? psd.tailleV : -1, phd != null ? phd.tailleV : -1, UA_PC);
                 h.post(() -> {
                     if (g != generation) return;
@@ -948,6 +989,7 @@ public class FacebookActivity extends Activity {
         } else if (r.dashV != null) {
             final Plan pd = new Plan("hd", r.dashV, r.dashA, r.uaDash);
             pd.dureeMs = r.dureeMs;
+            ajouterVignette(r);
             ajouterApercu(r.dashV, r.uaDash, r.dureeMs);
             final String base;
             final String titreCarte;
@@ -968,7 +1010,7 @@ public class FacebookActivity extends Activity {
             new Thread(() -> {
                 pd.tailleV = sonderTaille(pd.url, pd.ua);
                 if (pd.audio != null) pd.tailleA = sonderTaille(pd.audio, pd.ua);
-                Supabase.partager(lienPartage, r.titre, r.image, r.dureeMs, -1, pd.tailleTotale(), UA_PC);
+                Supabase.partager(lienPartage, r.titre, r.image, r.mini, r.dureeMs, -1, pd.tailleTotale(), UA_PC);
                 h.post(() -> {
                     if (g != generation) return;
                     tD.setText(infoCarte(base, pd, 2500000));
@@ -1011,6 +1053,49 @@ public class FacebookActivity extends Activity {
             }
             apercu = null;
         }
+    }
+
+    /** Image de la vidéo (celle de la page Facebook), affichée au-dessus de l'aperçu ; sert aussi de miniature partagée. */
+    private void ajouterVignette(final Res r) {
+        final int g = generation;
+        final ImageView iv = new ImageView(this);
+        iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        iv.setBackgroundColor(Color.BLACK);
+        iv.setVisibility(View.GONE);
+        final TextView lt = texte(r.titre != null ? "🎬 " + r.titre
+                : "🎬 Titre introuvable : la vidéo sera enregistrée sans titre.", r.titre != null ? 16 : 12, r.titre != null);
+        lt.setTextColor(r.titre != null ? Color.WHITE : C_TXT2);
+        resultats.addView(lt, lp(-1, -2, 0, 0, 0, 8));
+        resultats.addView(iv, lp(-1, dp(180), 0, 0, 0, 8));
+        final TextView note = texte("Chargement de l'image…", 12, false);
+        note.setTextColor(C_TXT2);
+        resultats.addView(note, lp(-1, -2, 0, 0, 0, 8));
+        new Thread(() -> {
+            final String mini = Supabase.miniature(r.image, UA_PC);
+            final String raison = Supabase.erreurImage;
+            r.mini = mini;
+            Bitmap bm = null;
+            if (mini != null) {
+                try {
+                    byte[] d = Base64.decode(mini, Base64.DEFAULT);
+                    bm = BitmapFactory.decodeByteArray(d, 0, d.length);
+                } catch (Exception ignore) {
+                    // image illisible
+                }
+            }
+            final Bitmap img = bm;
+            h.post(() -> {
+                if (g != generation) return;
+                if (img != null) {
+                    iv.setImageBitmap(img);
+                    iv.setVisibility(View.VISIBLE);
+                    note.setVisibility(View.GONE);
+                } else {
+                    note.setText("🖼 Image introuvable : " + (raison == null || raison.isEmpty() ? "raison inconnue" : raison)
+                            + ". La vidéo sera enregistrée sans image.");
+                }
+            });
+        }).start();
     }
 
     /**
@@ -1096,7 +1181,7 @@ public class FacebookActivity extends Activity {
                 .setMessage("Voulez-vous télécharger cette vidéo au format " + format + " ?\n\n"
                         + "⏱ Durée : " + formatDuree(p.dureeMs) + "\n"
                         + "💾 Taille : " + (p.tailleTotale() > 0 ? formatTaille(p.tailleTotale()) : "non communiquée par Facebook")
-                        + "\n\nElle sera enregistrée dans « Mes vidéos & audios ».\n"
+                        + "\n\nElle sera enregistrée dans « Téléchargements > Vidéos Facebook téléchargées ».\n"
                         + "Pour une longue vidéo, gardez l'écran allumé et l'application ouverte jusqu'à la fin.")
                 .setPositiveButton("Télécharger", (d, w) -> telecharger(p))
                 .setNegativeButton("Annuler", null)
@@ -1174,7 +1259,7 @@ public class FacebookActivity extends Activity {
             }
             final String finInfo = nom + " · " + formatTaille(taille)
                     + (reelMs > 0 ? " · " + formatDuree(reelMs) : "")
-                    + "\nRetrouvez-le dans Sans internet → Mes vidéos & audios." + alerte;
+                    + "\nRetrouvez-le dans Téléchargements → Vidéos Facebook téléchargées." + alerte;
             final boolean complet = alerte.isEmpty();
             final String lienCompte = dernierLien;
             new Thread(() -> Supabase.compterTelechargement(lienCompte)).start();
