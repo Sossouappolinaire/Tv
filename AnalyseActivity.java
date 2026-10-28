@@ -2,7 +2,22 @@ package bj.radio;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlertDialog;
+import android.app.AppOpsManager;
+import android.app.usage.UsageStats;
+import android.app.usage.UsageStatsManager;
+import android.content.Context;
+import android.content.IntentFilter;
+import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.ServiceInfo;
+import android.content.pm.ActivityInfo;
+import android.os.BatteryManager;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
+import android.os.Process;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.ColorStateList;
@@ -23,6 +38,9 @@ import android.widget.Toast;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.RandomAccessFile;
+import java.security.MessageDigest;
+import java.util.HashMap;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.Locale;
@@ -37,6 +55,9 @@ import java.util.TreeMap;
  *  1) fichiers malveillants : programmes déguisés, scripts, fichier de test antivirus, autorun…
  *     (détection par nom, extension et contenu réel du fichier ; les .apk ne sont PAS recherchés)
  *  2) fichiers et dossiers cachés (nom commençant par un point), rangés par dossier, supprimables
+ *  3) doublons : fichiers identiques (même contenu) rangés par groupe, on garde un exemplaire
+ *  4) applications suspectes (hors boutique officielle + permissions dangereuses, appli sans icône)
+ *  5) chaleur et batterie : température, état thermique ; refroidissement et optimisation
  */
 public class AnalyseActivity extends Activity {
 
@@ -67,6 +88,19 @@ public class AnalyseActivity extends Activity {
     private static final String EICAR = "EICAR-STANDARD-ANTIVIRUS-TEST-FILE";
     private static final int MAX_FICHIERS = 400000;
 
+    /** Application installée qui mérite une vérification. */
+    static class AppSuspecte {
+        String pkg, nom;
+        int score;
+        List<String> raisons = new ArrayList<>();
+    }
+
+    private static final long MIN_DOUBLON = 20 * 1024;   // en dessous de 20 Ko : sans intérêt
+    private final Map<Long, List<File>> parTaille = new HashMap<>();
+    private LinearLayout corpsChaleur, corpsApps, corpsDoublons;
+    private final Handler hUi = new Handler(Looper.getMainLooper());
+    private float tempAvant = -1;
+
     private TextView statut;
     private Button btnAnalyse, btnSupprimer;
     private LinearLayout zoneResultats, corpsMenaces, corpsFichiers;
@@ -83,7 +117,7 @@ public class AnalyseActivity extends Activity {
 
         LinearLayout page = new LinearLayout(this);
         page.setOrientation(LinearLayout.VERTICAL);
-        page.setBackgroundColor(Ui.BG);
+        page.setBackground(Ui.fond());
 
         LinearLayout contenu = new LinearLayout(this);
         contenu.setOrientation(LinearLayout.VERTICAL);
@@ -92,12 +126,13 @@ public class AnalyseActivity extends Activity {
 
         Ui.ajouter(contenu, Ui.texte(this, "🛡 Analyse du téléphone", 24, Ui.TXT, true), 0);
         Ui.ajouter(contenu, Ui.texte(this,
-                "Cherche les fichiers malveillants (programmes déguisés en photo ou en vidéo, scripts, "
-                + "fichiers de propagation par clé USB), puis les fichiers cachés rangés par dossier. "
-                + "Vous choisissez ce qu'il faut supprimer : rien n'est effacé sans votre accord.\n\n"
-                + "Ce n'est pas un antivirus à base de signatures : l'analyse repose sur le nom, l'extension "
-                + "et le contenu réel des fichiers. Un fichier signalé n'est pas forcément un virus. "
-                + "Les applications installées ne sont pas analysées.",
+                "Vérifie si le téléphone chauffe (et le refroidit), cherche les fichiers malveillants "
+                + "(programmes déguisés en photo ou en vidéo, scripts, propagation par clé USB), les applications "
+                + "suspectes, les doublons et les fichiers cachés. "
+                + "Vous choisissez ce qu'il faut supprimer : aucun fichier n'est effacé sans votre accord.\n\n"
+                + "Ce n'est pas un antivirus à base de signatures : l'analyse repose sur le nom, l'extension, "
+                + "le contenu réel des fichiers et les permissions des applications. Un élément signalé "
+                + "n'est pas forcément un virus.",
                 13, Ui.TXT2, false), 6);
 
         btnAnalyse = Ui.bouton(this, "🔍 Lancer l'analyse", 0xFFC0392B);
@@ -131,6 +166,7 @@ public class AnalyseActivity extends Activity {
     protected void onResume() {
         super.onResume();
         reprendre();
+        if (corpsChaleur != null && !enCours) verifierChaleur(false);   // au retour des réglages Android
     }
 
     @Override
@@ -158,10 +194,16 @@ public class AnalyseActivity extends Activity {
         btnAnalyse.setText("Analyse en cours…");
         statut.setText("Analyse des fichiers…");
 
+        corpsChaleur = section("🌡 Chaleur et batterie");
         corpsMenaces = section("🦠 Fichiers malveillants");
+        corpsApps = section("📱 Applications à vérifier");
+        corpsDoublons = section("📑 Doublons");
         corpsFichiers = section("👻 Fichiers cachés");
 
+        verifierChaleur(true);   // chaleur d'abord : si le téléphone est chaud, on le refroidit tout de suite
+
         new Thread(() -> {
+            scannerApps();
             if (accesStockage()) {
                 scannerFichiers();
             } else {
@@ -177,6 +219,7 @@ public class AnalyseActivity extends Activity {
         btnAnalyse.setText("Analyse en cours…");
         corpsFichiers.removeAllViews();
         corpsMenaces.removeAllViews();
+        corpsDoublons.removeAllViews();
         elements.clear();
         new Thread(() -> {
             scannerFichiers();
@@ -341,6 +384,536 @@ public class AnalyseActivity extends Activity {
                 11, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 8, 0));
     }
 
+    // ================= Doublons =================
+
+    private static String hex(byte[] b) {
+        StringBuilder sb = new StringBuilder();
+        for (byte x : b) sb.append(String.format(Locale.ROOT, "%02x", x));
+        return sb.toString();
+    }
+
+    /** Empreinte du contenu. Gros fichier (> 32 Mo) : début + milieu + fin seulement (rapide). */
+    private String empreinte(File f) {
+        try (RandomAccessFile raf = new RandomAccessFile(f, "r")) {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            long len = raf.length();
+            byte[] buf = new byte[65536];
+            if (len <= (32L << 20)) {
+                int n;
+                while ((n = raf.read(buf)) > 0) md.update(buf, 0, n);
+            } else {
+                long[] pos = {0, Math.max(0, len / 2 - 524288), len - 1048576};
+                for (long p : pos) {
+                    raf.seek(p);
+                    long reste = 1048576;
+                    while (reste > 0) {
+                        int n = raf.read(buf, 0, (int) Math.min(buf.length, reste));
+                        if (n <= 0) break;
+                        md.update(buf, 0, n);
+                        reste -= n;
+                    }
+                }
+            }
+            return hex(md.digest());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Groupes de fichiers de même taille ET de même contenu. */
+    private List<List<File>> trouverDoublons() {
+        List<List<File>> res = new ArrayList<>();
+        for (Map.Entry<Long, List<File>> en : parTaille.entrySet()) {
+            List<File> memeTaille = en.getValue();
+            if (memeTaille.size() < 2) continue;
+            Map<String, List<File>> parEmpreinte = new HashMap<>();
+            for (File f : memeTaille) {
+                String h = empreinte(f);
+                if (h == null) continue;
+                List<File> l = parEmpreinte.get(h);
+                if (l == null) { l = new ArrayList<>(); parEmpreinte.put(h, l); }
+                l.add(f);
+            }
+            for (List<File> g : parEmpreinte.values()) if (g.size() >= 2) res.add(g);
+        }
+        // les plus gros gaspillages d'abord
+        res.sort((a, b) -> Long.compare(b.get(0).length() * (b.size() - 1), a.get(0).length() * (a.size() - 1)));
+        return res;
+    }
+
+    private void afficherDoublons(List<List<File>> groupes, File racine) {
+        corpsDoublons.removeAllViews();
+        if (groupes.isEmpty()) {
+            corpsDoublons.addView(Ui.texte(this, "✅ Aucun doublon trouvé.", 14, Ui.TXT2, false));
+            return;
+        }
+        long gaspille = 0;
+        int copies = 0;
+        for (List<File> g : groupes) { gaspille += g.get(0).length() * (g.size() - 1); copies += g.size() - 1; }
+        final List<Element> toutes = new ArrayList<>();
+        corpsDoublons.addView(Ui.texte(this, groupes.size() + " fichier(s) en plusieurs exemplaires • "
+                + copies + " copie(s) inutile(s) • " + Formatter.formatFileSize(this, gaspille) + " récupérables",
+                13, Ui.TXT2, false));
+        corpsDoublons.addView(Ui.texte(this,
+                "Dans chaque groupe, l'exemplaire le plus ancien est considéré comme l'original. "
+                + "« Cocher les copies » coche tous les autres : rien n'est effacé avant votre confirmation.",
+                11, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 4, 0));
+        Button toutCocher = Ui.bouton(this, "Cocher toutes les copies", 0xFF3A7BD5);
+        toutCocher.setTextSize(12);
+        corpsDoublons.addView(toutCocher, Ui.lp(this, -1, -2, 0f, 8, 0));
+
+        String base = racine.getAbsolutePath();
+        int numero = 0;
+        for (List<File> g : groupes) {
+            if (++numero > 150) {   // on n'affiche que les 150 plus gros groupes
+                corpsDoublons.addView(Ui.texte(this, "… et " + (groupes.size() - 150) + " autres groupes plus petits.",
+                        12, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 8, 0));
+                break;
+            }
+            g.sort((a, b) -> Long.compare(a.lastModified(), b.lastModified()));
+            LinearLayout carte = new LinearLayout(this);
+            carte.setOrientation(LinearLayout.VERTICAL);
+            carte.setBackground(Ui.rond(Ui.CARD, 16, this));
+            int q = Ui.dp(this, 12);
+            carte.setPadding(q, q, q, q);
+
+            LinearLayout entete = new LinearLayout(this);
+            entete.setGravity(Gravity.CENTER_VERTICAL);
+            entete.addView(Ui.texte(this, "📑 " + g.get(0).getName() + "\n" + g.size() + " exemplaires • "
+                    + Formatter.formatFileSize(this, g.get(0).length()) + " chacun", 13, Ui.JAUNE, true),
+                    new LinearLayout.LayoutParams(0, -2, 1f));
+            Button copiesBtn = Ui.bouton(this, "Cocher les copies", 0xFF3A7BD5);
+            copiesBtn.setTextSize(11);
+            entete.addView(copiesBtn);
+            carte.addView(entete);
+
+            final List<Element> groupeEl = new ArrayList<>();
+            for (int i = 0; i < g.size(); i++) {
+                File f = g.get(i);
+                Element e = new Element();
+                e.f = f;
+                e.taille = f.length();
+                e.nb = 1;
+                CheckBox cb = new CheckBox(this);
+                cb.setTextColor(Ui.TXT);
+                cb.setTextSize(12);
+                cb.setButtonTintList(ColorStateList.valueOf(Ui.ACCENT));
+                String chemin = f.getParent() == null ? "/" : f.getParent();
+                if (chemin.startsWith(base)) chemin = chemin.substring(base.length());
+                if (chemin.isEmpty()) chemin = "/";
+                cb.setText((i == 0 ? "⭐ Original : " : "📄 Copie : ") + f.getName() + "\n" + chemin);
+                cb.setOnCheckedChangeListener((v, c) -> majBouton());
+                e.box = cb;
+                e.ligne = cb;
+                e.groupe = carte;
+                carte.addView(cb, Ui.lp(this, -1, -2, 0f, 4, 0));
+                groupeEl.add(e);
+                if (i > 0) toutes.add(e);
+            }
+            elements.addAll(groupeEl);
+            copiesBtn.setOnClickListener(v -> {
+                boolean dejaToutes = true;
+                for (int i = 1; i < groupeEl.size(); i++) if (!groupeEl.get(i).box.isChecked()) dejaToutes = false;
+                for (int i = 1; i < groupeEl.size(); i++) groupeEl.get(i).box.setChecked(!dejaToutes);
+            });
+            corpsDoublons.addView(carte, Ui.lp(this, -1, -2, 0f, 10, 0));
+        }
+        toutCocher.setOnClickListener(v -> {
+            boolean dejaToutes = true;
+            for (Element e : toutes) if (!e.box.isChecked()) dejaToutes = false;
+            for (Element e : toutes) e.box.setChecked(!dejaToutes);
+        });
+    }
+
+    // ================= Applications suspectes =================
+
+    private static final List<String> BOUTIQUES = Arrays.asList(
+            "com.android.vending", "com.sec.android.app.samsungapps", "com.huawei.appmarket",
+            "com.xiaomi.mipicks", "com.xiaomi.market", "com.amazon.venezia", "com.heytap.market",
+            "com.oppo.market", "com.vivo.appstore", "com.transsion.phonemaster", "com.google.android.feedback");
+
+    private void scannerApps() {
+        final List<AppSuspecte> trouvees = new ArrayList<>();
+        int total = 0;
+        PackageManager pm = getPackageManager();
+        for (ApplicationInfo ai : pm.getInstalledApplications(0)) {
+            if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0 || ai.packageName.equals(getPackageName())) continue;
+            total++;
+            try {
+                AppSuspecte a = evaluerApp(pm, ai);
+                if (a != null) trouvees.add(a);
+            } catch (Exception ignore) {
+                // appli illisible : on passe
+            }
+        }
+        trouvees.sort((x, y) -> y.score - x.score);
+        final int n = total;
+        runOnUiThread(() -> afficherApps(trouvees, n));
+    }
+
+    private AppSuspecte evaluerApp(PackageManager pm, ApplicationInfo ai) throws Exception {
+        PackageInfo pi = pm.getPackageInfo(ai.packageName,
+                PackageManager.GET_PERMISSIONS | PackageManager.GET_SERVICES | PackageManager.GET_RECEIVERS);
+        int score = 0;
+        List<String> rs = new ArrayList<>();
+
+        String installateur = null;
+        try {
+            installateur = Build.VERSION.SDK_INT >= 30
+                    ? pm.getInstallSourceInfo(ai.packageName).getInstallingPackageName()
+                    : pm.getInstallerPackageName(ai.packageName);
+        } catch (Exception ignore) {
+            // inconnu
+        }
+        boolean horsBoutique = installateur == null || !BOUTIQUES.contains(installateur);
+        if (horsBoutique) {
+            score += 1;
+            rs.add("Installée hors d'une boutique officielle (fichier .apk, clé USB, lien…)");
+        }
+
+        List<String> perms = pi.requestedPermissions == null
+                ? new ArrayList<String>() : Arrays.asList(pi.requestedPermissions);
+        boolean sms = perms.contains("android.permission.READ_SMS") || perms.contains("android.permission.RECEIVE_SMS")
+                || perms.contains("android.permission.SEND_SMS");
+        if (sms) { score += 2; rs.add("Peut lire ou envoyer vos SMS (codes bancaires, abonnements surtaxés)"); }
+        if (perms.contains("android.permission.SYSTEM_ALERT_WINDOW")) {
+            score += 1; rs.add("Peut s'afficher par-dessus les autres applications (fausses fenêtres de saisie)");
+        }
+        if (perms.contains("android.permission.REQUEST_INSTALL_PACKAGES")) {
+            score += 2; rs.add("Peut installer d'autres applications");
+        }
+        if (perms.contains("android.permission.READ_CALL_LOG")) { score += 1; rs.add("Peut lire votre journal d'appels"); }
+
+        boolean accessibilite = false, admin = false, notifs = false;
+        if (pi.services != null) {
+            for (ServiceInfo si : pi.services) {
+                if ("android.permission.BIND_ACCESSIBILITY_SERVICE".equals(si.permission)) accessibilite = true;
+                if ("android.permission.BIND_NOTIFICATION_LISTENER_SERVICE".equals(si.permission)) notifs = true;
+            }
+        }
+        if (pi.receivers != null) {
+            for (ActivityInfo ri : pi.receivers) {
+                if ("android.permission.BIND_DEVICE_ADMIN".equals(ri.permission)) admin = true;
+            }
+        }
+        if (accessibilite) { score += 3; rs.add("Service d'accessibilité : peut lire l'écran et agir à votre place"); }
+        if (admin) { score += 3; rs.add("Administrateur de l'appareil : difficile à désinstaller"); }
+        if (notifs) { score += 1; rs.add("Peut lire vos notifications"); }
+
+        boolean sansIcone = pm.getLaunchIntentForPackage(ai.packageName) == null;
+        if (sansIcone && horsBoutique) {
+            score += 2;
+            rs.add("Aucune icône dans le menu : l'application est cachée");
+        }
+        // Les applis réputées (boutique officielle) ont souvent ces permissions légitimement : seuil plus haut
+        int seuil = horsBoutique ? 4 : 6;
+        if (score < seuil) return null;
+        AppSuspecte a = new AppSuspecte();
+        a.pkg = ai.packageName;
+        CharSequence nom = pm.getApplicationLabel(ai);
+        a.nom = nom == null ? ai.packageName : nom.toString();
+        a.score = score;
+        a.raisons = rs;
+        return a;
+    }
+
+    private void afficherApps(List<AppSuspecte> apps, int total) {
+        corpsApps.removeAllViews();
+        if (apps.isEmpty()) {
+            corpsApps.addView(Ui.texte(this, "✅ Aucune application suspecte parmi les " + total
+                    + " applications installées.", 14, Ui.TXT2, false));
+            return;
+        }
+        corpsApps.addView(Ui.texte(this, apps.size() + " application(s) à vérifier sur " + total + " installées :",
+                13, Ui.TXT2, false));
+        for (AppSuspecte a : apps) {
+            LinearLayout carte = new LinearLayout(this);
+            carte.setOrientation(LinearLayout.VERTICAL);
+            carte.setBackground(Ui.rond(Ui.CARD, 16, this));
+            int q = Ui.dp(this, 14);
+            carte.setPadding(q, q, q, q);
+
+            LinearLayout haut = new LinearLayout(this);
+            haut.setGravity(Gravity.CENTER_VERTICAL);
+            LinearLayout noms = new LinearLayout(this);
+            noms.setOrientation(LinearLayout.VERTICAL);
+            noms.addView(Ui.texte(this, a.nom, 15, Ui.TXT, true));
+            noms.addView(Ui.texte(this, a.pkg, 11, Ui.TXT2, false));
+            haut.addView(noms, new LinearLayout.LayoutParams(0, -2, 1f));
+            boolean eleve = a.score >= 7;
+            TextView niveau = Ui.texte(this, eleve ? "Dangereuse ?" : "À vérifier", 12, Ui.TXT, true);
+            niveau.setBackground(Ui.rond(eleve ? 0xFFC0392B : 0xFFD68910, 10, this));
+            int m = Ui.dp(this, 8);
+            niveau.setPadding(m, m / 2, m, m / 2);
+            haut.addView(niveau);
+            carte.addView(haut);
+
+            StringBuilder sb = new StringBuilder();
+            for (String r : a.raisons) sb.append("• ").append(r).append('\n');
+            carte.addView(Ui.texte(this, sb.toString().trim(), 12, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 8, 0));
+
+            LinearLayout boutons = new LinearLayout(this);
+            Button infos = Ui.bouton(this, "ℹ Infos", 0xFF3A7BD5);
+            Button desinst = Ui.bouton(this, "🗑 Désinstaller", 0xFFC0392B);
+            infos.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:" + a.pkg))));
+            desinst.setOnClickListener(v -> startActivity(new Intent(Intent.ACTION_DELETE,
+                    Uri.parse("package:" + a.pkg))));
+            boutons.addView(infos, Ui.lp(this, 0, -2, 1f, 0, 0));
+            boutons.addView(desinst, Ui.lp(this, 0, -2, 1f, 0, 8));
+            carte.addView(boutons, Ui.lp(this, -1, -2, 0f, 8, 0));
+            corpsApps.addView(carte, Ui.lp(this, -1, -2, 0f, 10, 0));
+        }
+        corpsApps.addView(Ui.texte(this,
+                "Android affiche sa propre confirmation avant toute désinstallation. Si le bouton ne fait rien, "
+                + "l'application est administrateur de l'appareil : retirez d'abord ce droit dans "
+                + "Paramètres › Sécurité › Applications d'administration.", 11, Ui.TXT2, false),
+                Ui.lp(this, -1, -2, 0f, 8, 0));
+    }
+
+    // ================= Chaleur et batterie =================
+
+    private float lireTemperature() {
+        Intent bi = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (bi == null) return -1;
+        int t = bi.getIntExtra(BatteryManager.EXTRA_TEMPERATURE, -1);
+        return t < 0 ? -1 : t / 10f;
+    }
+
+    private static String degres(float t) {
+        return String.format(Locale.FRANCE, "%.1f °C", t);
+    }
+
+    private void verifierChaleur(boolean auto) {
+        if (corpsChaleur == null) return;
+        corpsChaleur.removeAllViews();
+        Intent bi = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
+        if (bi == null) {
+            corpsChaleur.addView(Ui.texte(this, "Impossible de lire l'état de la batterie.", 14, Ui.TXT2, false));
+            return;
+        }
+        float temp = lireTemperature();
+        int niv = bi.getIntExtra(BatteryManager.EXTRA_LEVEL, -1);
+        int ech = bi.getIntExtra(BatteryManager.EXTRA_SCALE, 100);
+        int pct = niv >= 0 && ech > 0 ? niv * 100 / ech : -1;
+        int branche = bi.getIntExtra(BatteryManager.EXTRA_PLUGGED, 0);
+        int sante = bi.getIntExtra(BatteryManager.EXTRA_HEALTH, 0);
+        int therm = -1;
+        if (Build.VERSION.SDK_INT >= 29) {
+            try {
+                therm = ((PowerManager) getSystemService(Context.POWER_SERVICE)).getCurrentThermalStatus();
+            } catch (Exception ignore) {
+                // non disponible
+            }
+        }
+        boolean surchauffe = sante == BatteryManager.BATTERY_HEALTH_OVERHEAT;
+        boolean chaud = temp >= 40f || surchauffe || therm >= 2;
+
+        String etat;
+        if (temp < 0) etat = "inconnue";
+        else if (temp >= 45f || therm >= 3) etat = "très chaud 🔥";
+        else if (chaud) etat = "chaud";
+        else if (temp >= 35f) etat = "tiède";
+        else etat = "normale";
+        corpsChaleur.addView(Ui.texte(this, "🌡 Température : " + (temp < 0 ? "?" : degres(temp)) + " — " + etat,
+                16, chaud ? 0xFFFF8A65 : Ui.TXT, true));
+        corpsChaleur.addView(Ui.texte(this, "🔋 Batterie : " + (pct < 0 ? "?" : pct + " %")
+                + (branche != 0 ? " • en charge" : " • sur batterie")
+                + (surchauffe ? " • ⚠ Android signale une surchauffe" : ""), 13, Ui.TXT2, false),
+                Ui.lp(this, -1, -2, 0f, 4, 0));
+
+        if (chaud) {
+            StringBuilder c = new StringBuilder("⚠ Le téléphone est chaud.");
+            if (branche != 0) c.append(" Débranchez le chargeur : la charge chauffe beaucoup.");
+            corpsChaleur.addView(Ui.texte(this, c.toString(), 13, 0xFFFFC857, false), Ui.lp(this, -1, -2, 0f, 6, 0));
+        } else {
+            corpsChaleur.addView(Ui.texte(this, "✅ Le téléphone n'est pas chaud.", 13, Ui.TXT2, false),
+                    Ui.lp(this, -1, -2, 0f, 6, 0));
+        }
+
+        Button opt = Ui.bouton(this, chaud ? "❄ Refroidir et optimiser" : "⚙ Optimiser la batterie", 0xFF2E9E73);
+        opt.setOnClickListener(v -> optimiser());
+        corpsChaleur.addView(opt, Ui.lp(this, -1, -2, 0f, 10, 0));
+
+        LinearLayout l2 = new LinearLayout(this);
+        Button lum = Ui.bouton(this, "🔅 Baisser la luminosité", 0xFF3A7BD5);
+        Button eco = Ui.bouton(this, "🔋 Économie d'énergie", 0xFF3A7BD5);
+        lum.setTextSize(12);
+        eco.setTextSize(12);
+        lum.setOnClickListener(v -> baisserLuminosite());
+        eco.setOnClickListener(v -> {
+            try {
+                startActivity(new Intent(Settings.ACTION_BATTERY_SAVER_SETTINGS));
+            } catch (Exception e) {
+                startActivity(new Intent(Settings.ACTION_SETTINGS));
+            }
+        });
+        l2.addView(lum, Ui.lp(this, 0, -2, 1f, 0, 0));
+        l2.addView(eco, Ui.lp(this, 0, -2, 1f, 0, 8));
+        corpsChaleur.addView(l2, Ui.lp(this, -1, -2, 0f, 8, 0));
+
+        corpsChaleur.addView(Ui.texte(this,
+                "Une application ne peut pas refroidir le processeur elle-même : elle arrête ce qui tourne en "
+                + "arrière-plan, vide son cache et vous aide à réduire la charge. La température baisse ensuite "
+                + "lentement (comptez quelques minutes). Pour aller plus vite : sortez le téléphone de sa coque, "
+                + "mettez-le à l'ombre, fermez les jeux et la caméra.", 11, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 8, 0));
+
+        afficherConsommation();
+
+        if (auto && chaud) optimiser();
+    }
+
+    /** Arrête les applications en arrière-plan, vide le cache de Sossokouamé appel, puis remesure la température. */
+    private void optimiser() {
+        tempAvant = lireTemperature();
+        int n = 0;
+        ActivityManager am = (ActivityManager) getSystemService(Context.ACTIVITY_SERVICE);
+        for (ApplicationInfo ai : getPackageManager().getInstalledApplications(0)) {
+            if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0 || ai.packageName.equals(getPackageName())) continue;
+            try {
+                am.killBackgroundProcesses(ai.packageName);
+                n++;
+            } catch (Exception ignore) {
+                // refusé pour cette appli
+            }
+        }
+        long libere = viderCache(getCacheDir()) + viderCache(getExternalCacheDir());
+        final TextView res = Ui.texte(this, "⏳ Optimisation faite : activités en arrière-plan arrêtées pour " + n
+                + " application(s), cache vidé (" + Formatter.formatFileSize(this, libere) + "). "
+                + "Nouvelle mesure dans 30 secondes…", 12, Ui.JAUNE, false);
+        corpsChaleur.addView(res, Ui.lp(this, -1, -2, 0f, 8, 0));
+        Toast.makeText(this, "Optimisation en cours…", Toast.LENGTH_SHORT).show();
+        hUi.postDelayed(() -> {
+            if (isFinishing()) return;
+            float apres = lireTemperature();
+            String t = tempAvant >= 0 && apres >= 0
+                    ? "Avant : " + degres(tempAvant) + " → maintenant : " + degres(apres)
+                    : "Température maintenant : " + (apres < 0 ? "?" : degres(apres));
+            res.setText("✅ Optimisation terminée. " + t + ". La baisse continue pendant quelques minutes "
+                    + "si le téléphone reste au repos.");
+        }, 30000);
+    }
+
+    private long viderCache(File d) {
+        if (d == null || !d.exists()) return 0;
+        long t = 0;
+        File[] l = d.listFiles();
+        if (l != null) {
+            for (File f : l) {
+                t += f.isDirectory() ? viderCache(f) : f.length();
+                f.delete();
+            }
+        }
+        return t;
+    }
+
+    private void baisserLuminosite() {
+        if (!Settings.System.canWrite(this)) {
+            Toast.makeText(this, "Autorisez la modification des réglages, puis appuyez de nouveau", Toast.LENGTH_LONG).show();
+            try {
+                startActivity(new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS, Uri.parse("package:" + getPackageName())));
+            } catch (Exception e) {
+                startActivity(new Intent(Settings.ACTION_DISPLAY_SETTINGS));
+            }
+            return;
+        }
+        try {
+            Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS_MODE,
+                    Settings.System.SCREEN_BRIGHTNESS_MODE_MANUAL);
+            Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, 70);   // sur 255
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.screenBrightness = 70 / 255f;
+            getWindow().setAttributes(lp);
+            Toast.makeText(this, "Luminosité baissée (réglable dans les paramètres d'affichage)", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "Impossible de changer la luminosité", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private boolean accesUtilisation() {
+        try {
+            AppOpsManager ao = (AppOpsManager) getSystemService(Context.APP_OPS_SERVICE);
+            int mode = ao.checkOpNoThrow(AppOpsManager.OPSTR_GET_USAGE_STATS, Process.myUid(), getPackageName());
+            return mode == AppOpsManager.MODE_ALLOWED;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Les applications les plus utilisées ces dernières 24 h : ce sont elles qui chauffent et vident la batterie. */
+    private void afficherConsommation() {
+        corpsChaleur.addView(Ui.texte(this, "📊 Applications qui consomment le plus (24 h)", 14, Ui.TXT, true),
+                Ui.lp(this, -1, -2, 0f, 14, 0));
+        if (!accesUtilisation()) {
+            corpsChaleur.addView(Ui.texte(this, "Pour savoir lesquelles consomment, Android demande l'autorisation "
+                    + "« Accès aux données d'utilisation ».", 12, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 4, 0));
+            Button b = Ui.bouton(this, "Autoriser l'accès aux statistiques", 0xFF3A7BD5);
+            b.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)));
+            corpsChaleur.addView(b, Ui.lp(this, -1, -2, 0f, 6, 0));
+            return;
+        }
+        try {
+            UsageStatsManager us = (UsageStatsManager) getSystemService(Context.USAGE_STATS_SERVICE);
+            long now = System.currentTimeMillis();
+            List<UsageStats> l = us.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 24L * 3600 * 1000, now);
+            Map<String, Long> temps = new HashMap<>();
+            if (l != null) {
+                for (UsageStats u : l) {
+                    long t = u.getTotalTimeInForeground();
+                    if (t <= 0) continue;
+                    Long d = temps.get(u.getPackageName());
+                    temps.put(u.getPackageName(), (d == null ? 0 : d) + t);
+                }
+            }
+            PackageManager pm = getPackageManager();
+            List<Map.Entry<String, Long>> tri = new ArrayList<>(temps.entrySet());
+            tri.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+            int affiches = 0;
+            for (Map.Entry<String, Long> en : tri) {
+                if (affiches >= 5) break;
+                final String pkg = en.getKey();
+                if (pkg.equals(getPackageName()) || en.getValue() < 2 * 60 * 1000) continue;
+                String nom = pkg;
+                try {
+                    ApplicationInfo ai = pm.getApplicationInfo(pkg, 0);
+                    if ((ai.flags & ApplicationInfo.FLAG_SYSTEM) != 0
+                            && (ai.flags & ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) == 0) continue;
+                    nom = String.valueOf(pm.getApplicationLabel(ai));
+                } catch (Exception ignore) {
+                    continue;
+                }
+                long min = en.getValue() / 60000;
+                String duree = min >= 60 ? (min / 60) + " h " + String.format(Locale.FRANCE, "%02d", min % 60) + " min" : min + " min";
+                LinearLayout ligne = new LinearLayout(this);
+                ligne.setGravity(Gravity.CENTER_VERTICAL);
+                ligne.addView(Ui.texte(this, nom + " — " + duree, 13, Ui.TXT2, false), new LinearLayout.LayoutParams(0, -2, 1f));
+                Button b = Ui.bouton(this, "Arrêter / infos", 0xFF3A7BD5);
+                b.setTextSize(11);
+                b.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                        Uri.parse("package:" + pkg))));
+                ligne.addView(b);
+                corpsChaleur.addView(ligne, Ui.lp(this, -1, -2, 0f, 4, 0));
+                affiches++;
+            }
+            if (affiches == 0) {
+                corpsChaleur.addView(Ui.texte(this, "Aucune application n'a été beaucoup utilisée.", 12, Ui.TXT2, false),
+                        Ui.lp(this, -1, -2, 0f, 4, 0));
+            } else {
+                corpsChaleur.addView(Ui.texte(this, "« Arrêter / infos » ouvre la fiche de l'application : "
+                        + "appuyez sur « Forcer l'arrêt », ou limitez sa batterie.", 11, Ui.TXT2, false),
+                        Ui.lp(this, -1, -2, 0f, 4, 0));
+            }
+        } catch (Exception e) {
+            corpsChaleur.addView(Ui.texte(this, "Statistiques indisponibles sur ce téléphone.", 12, Ui.TXT2, false));
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        hUi.removeCallbacksAndMessages(null);
+        super.onDestroy();
+    }
+
     // ================= Fichiers cachés =================
 
     private boolean accesStockage() {
@@ -381,9 +954,14 @@ public class AnalyseActivity extends Activity {
         List<Element> caches = new ArrayList<>();
         List<Element> menaces = new ArrayList<>();
         nbFichiersVus = 0;
+        parTaille.clear();
         parcourir(racine, 0, false, caches, menaces);
+        runOnUiThread(() -> statut.setText("Recherche des doublons…"));
+        final List<List<File>> doublons = trouverDoublons();
+        parTaille.clear();
         runOnUiThread(() -> {
             afficherMenaces(menaces, racine);
+            afficherDoublons(doublons, racine);
             afficherFichiers(caches, racine);
         });
     }
@@ -428,6 +1006,14 @@ public class AnalyseActivity extends Activity {
                 parcourir(f, profondeur + 1, dansCache || cache, caches, menaces);
             } else {
                 nbFichiersVus++;
+                if (!dansCache && !cache) {
+                    long len = f.length();
+                    if (len >= MIN_DOUBLON) {
+                        List<File> l = parTaille.get(len);
+                        if (l == null) { l = new ArrayList<>(); parTaille.put(len, l); }
+                        l.add(f);
+                    }
+                }
                 Element m = evaluer(f, nom);
                 if (m != null) menaces.add(m);
             }

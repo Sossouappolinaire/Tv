@@ -47,7 +47,7 @@ public class HorsLigneActivity extends Activity {
                 this::dialogTelecharger);
 
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Ui.BG);
+        sv.setBackground(Ui.fond());
         sv.addView(root);
         setContentView(sv);
     }

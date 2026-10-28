@@ -104,7 +104,7 @@ public class TvActivity extends Activity {
 
         root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Ui.BG);
+        root.setBackground(Ui.fond());
         int p = Ui.dp(this, 14);
         root.setPadding(p, p, p, p);
 
@@ -336,7 +336,7 @@ public class TvActivity extends Activity {
 
     String get(String adresse) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(adresse).openConnection();
-        c.setRequestProperty("User-Agent", "RiReAGogo/1.0");
+        c.setRequestProperty("User-Agent", "Sossokouame-appel/1.0");
         c.setConnectTimeout(10000);
         c.setReadTimeout(30000);
         if (c.getResponseCode() == 404) return null;

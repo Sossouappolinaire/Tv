@@ -129,7 +129,7 @@ public class CompilateurActivity extends Activity {
         Ui.ajouter(root, bTelechargements, 8);
 
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Ui.BG);
+        sv.setBackground(Ui.fond());
         sv.addView(root);
         setContentView(sv);
     }
@@ -416,7 +416,7 @@ public class CompilateurActivity extends Activity {
             String arbreSha = api("POST", "/repos/" + repo + "/git/trees", ct).getString("sha");
 
             JSONObject cc = new JSONObject();
-            cc.put("message", "Projet envoyé depuis RiRe a GOGO : " + nomZip);
+            cc.put("message", "Projet envoyé depuis Sossokouamé appel : " + nomZip);
             cc.put("tree", arbreSha);
             cc.put("parents", new JSONArray());
             String commit = api("POST", "/repos/" + repo + "/git/commits", cc).getString("sha");
@@ -543,7 +543,7 @@ public class CompilateurActivity extends Activity {
         c.setRequestProperty("Authorization", "Bearer " + token);
         c.setRequestProperty("Accept", "application/vnd.github+json");
         c.setRequestProperty("X-GitHub-Api-Version", "2022-11-28");
-        c.setRequestProperty("User-Agent", "RiReAGogo");
+        c.setRequestProperty("User-Agent", "Sossokouame-appel");
         c.setConnectTimeout(20000);
         c.setReadTimeout(120000);
         return c;

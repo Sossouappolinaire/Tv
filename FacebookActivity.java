@@ -119,6 +119,7 @@ public class FacebookActivity extends Activity {
         String sd, hd, uaSd, uaHd;
         String dashV, dashA, uaDash;
         long dureeMs = 0;   // durée de la vidéo (0 = inconnue)
+        String titre, image;   // titre et image de la page (partagés dans « Films Facebook »)
     }
 
     /** Ce qu'on va télécharger. audio != null : image et son séparés, à rassembler. */
@@ -267,6 +268,11 @@ public class FacebookActivity extends Activity {
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
+        if (!Compte.connecte()) {   // un compte est nécessaire, même quand on arrive par « Partager »
+            startActivity(new android.content.Intent(this, AuthActivity.class));
+            finish();
+            return;
+        }
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         getWindow().setStatusBarColor(C_HAUT);
         construire();
@@ -354,8 +360,10 @@ public class FacebookActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView intro = texte("Collez le lien d'une vidéo publique, ou partagez-la depuis Facebook "
-                + "vers RiRe a GOGO. Téléchargez seulement vos propres vidéos ou celles dont "
-                + "l'auteur est d'accord, et respectez les conditions de Facebook.", 13, false);
+                + "vers Sossokouamé appel. Téléchargez seulement vos propres vidéos ou celles dont "
+                + "l'auteur est d'accord, et respectez les conditions de Facebook.\n\n"
+                + "ℹ Chaque lien analysé (téléchargé ou non) est ajouté, avec son image, sa durée et sa taille, "
+                + "à « Films Facebook » : les autres utilisateurs de l'application le voient et peuvent le télécharger.", 13, false);
         intro.setTextColor(C_TXT2);
         contenu.addView(intro, lp(-1, -2, 0, 0, 0, 12));
 
@@ -637,6 +645,18 @@ public class FacebookActivity extends Activity {
     private void extraire(String html, String ua, Res r) {
         if (html == null) return;
         if (r.dureeMs <= 0) r.dureeMs = extraireDuree(html);
+        if (r.image == null) r.image = meta(html, "og:image");
+        if (r.titre == null) {
+            String t = meta(html, "og:title");
+            if (t != null) {
+                try {
+                    t = android.text.Html.fromHtml(t, android.text.Html.FROM_HTML_MODE_LEGACY).toString().trim();
+                } catch (Exception ignore) {
+                    // on garde le texte brut
+                }
+                if (!t.isEmpty()) r.titre = t;
+            }
+        }
         String sd = premier(html, CLES_SD);
         String hd = premier(html, CLES_HD);
         if (sd == null || hd == null) {
@@ -672,6 +692,18 @@ public class FacebookActivity extends Activity {
             r.hd = hd;
             r.uaHd = ua;
         }
+    }
+
+    /** Valeur d'une balise <meta property="..." content="..."> (og:image, og:title…). */
+    private String meta(String html, String prop) {
+        Matcher mt = META.matcher(html);
+        while (mt.find()) {
+            String tag = mt.group();
+            if (!tag.contains("\"" + prop + "\"")) continue;
+            Matcher mc = CONTENT.matcher(tag);
+            if (mc.find()) return decoder(mc.group(1));
+        }
+        return null;
     }
 
     private String premier(String html, String[] cles) {
@@ -867,7 +899,7 @@ public class FacebookActivity extends Activity {
             web.destroy();
             web = null;
         }
-        panneauWeb.setVisibility(View.GONE);
+        if (panneauWeb != null) panneauWeb.setVisibility(View.GONE);
     }
 
     private void annulerWeb() {
@@ -884,6 +916,7 @@ public class FacebookActivity extends Activity {
         nettoyerWeb();
         viderResultats();
         final int g = generation;
+        final String lienPartage = dernierLien;
         if (r.sd != null || r.hd != null) {
             tvEtat.setText("✅ Vidéo trouvée. Regardez l'aperçu, puis choisissez le format :");
             ajouterApercu(r.sd != null ? r.sd : r.hd, r.sd != null ? r.uaSd : r.uaHd, r.dureeMs);
@@ -903,6 +936,9 @@ public class FacebookActivity extends Activity {
             new Thread(() -> {
                 if (psd != null) psd.tailleV = sonderTaille(psd.url, psd.ua);
                 if (phd != null) phd.tailleV = sonderTaille(phd.url, phd.ua);
+                // Partage dans la base « Films Facebook » : image, durée, formats et tailles (même sans téléchargement)
+                Supabase.partager(lienPartage, r.titre, r.image, r.dureeMs,
+                        psd != null ? psd.tailleV : -1, phd != null ? phd.tailleV : -1, UA_PC);
                 h.post(() -> {
                     if (g != generation) return;
                     if (psd != null) tSd.setText(infoCarte("Environ 360p · fichier plus léger", psd, 900000));
@@ -932,6 +968,7 @@ public class FacebookActivity extends Activity {
             new Thread(() -> {
                 pd.tailleV = sonderTaille(pd.url, pd.ua);
                 if (pd.audio != null) pd.tailleA = sonderTaille(pd.audio, pd.ua);
+                Supabase.partager(lienPartage, r.titre, r.image, r.dureeMs, -1, pd.tailleTotale(), UA_PC);
                 h.post(() -> {
                     if (g != generation) return;
                     tD.setText(infoCarte(base, pd, 2500000));
@@ -1139,6 +1176,8 @@ public class FacebookActivity extends Activity {
                     + (reelMs > 0 ? " · " + formatDuree(reelMs) : "")
                     + "\nRetrouvez-le dans Sans internet → Mes vidéos & audios." + alerte;
             final boolean complet = alerte.isEmpty();
+            final String lienCompte = dernierLien;
+            new Thread(() -> Supabase.compterTelechargement(lienCompte)).start();
             h.post(() -> barreFin(true, complet ? "✅ Téléchargement terminé" : "⚠ Téléchargement terminé (incomplet)", finInfo));
         } catch (Exception e) {
             part.delete();

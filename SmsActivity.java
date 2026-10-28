@@ -103,7 +103,7 @@ public class SmsActivity extends Activity {
         Ui.ajouter(root, liste, 4);
 
         ScrollView sv = new ScrollView(this);
-        sv.setBackgroundColor(Ui.BG);
+        sv.setBackground(Ui.fond());
         sv.addView(root);
         setContentView(sv);
     }

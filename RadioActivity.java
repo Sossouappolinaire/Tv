@@ -76,7 +76,7 @@ public class RadioActivity extends Activity {
         Ui.fenetre(this);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Ui.BG);
+        root.setBackground(Ui.fond());
         int p = Ui.dp(this, 14);
         root.setPadding(p, p, p, p);
 
