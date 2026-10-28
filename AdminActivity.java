@@ -1,6 +1,8 @@
 package bj.radio;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
 import android.os.Bundle;
 import android.text.InputType;
 import android.view.View;
@@ -46,6 +48,21 @@ public class AdminActivity extends Activity {
         Button actu = Ui.bouton(this, "🔄 Actualiser", Ui.VIOLET);
         actu.setOnClickListener(v -> charger());
         Ui.ajouter(c, actu, 8);
+
+        Button sortir = Ui.boutonContour(this, "Se déconnecter", Ui.TXT);
+        sortir.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Se déconnecter ?")
+                .setMessage("Vous devrez saisir votre email et votre mot de passe pour revenir. Le code PIN sera supprimé.")
+                .setPositiveButton("Se déconnecter", (d, w) -> {
+                    Compte.deconnecter();
+                    Intent i = new Intent(this, AuthActivity.class);
+                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+                    startActivity(i);
+                    finish();
+                })
+                .setNegativeButton("Annuler", null)
+                .show());
+        Ui.ajouter(c, sortir, 8);
 
         Ui.ajouter(c, Ui.texte(this, "Ajouter un film Facebook", 18, Ui.TXT, true), 22);
         lien = Ui.champ(this, "Lien Facebook (obligatoire)");
