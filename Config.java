@@ -48,6 +48,7 @@ final class Config {
         if (r.optBoolean("aucune")) {
             if (sp.getLong("id", 0L) == 0L) return false;
             sp.edit().clear().apply();   // plus aucune configuration : l'appli reprend ses réglages d'origine
+            Ui.theme(null);
             return true;
         }
         long id = r.optLong("id", 0L);
@@ -59,6 +60,7 @@ final class Config {
                 .putString("note", r.optString("note", "").equals("null") ? "" : r.optString("note", ""))
                 .putLong("applique_ms", System.currentTimeMillis())
                 .apply();
+        Ui.theme(contenu);
         return true;
     }
 
@@ -71,6 +73,13 @@ final class Config {
         return "Mise à jour n° " + id + (note.isEmpty() ? "" : " (" + note + ")")
                 + "\n   fichier créé le " + date(sp.getLong("cree_ms", 0L))
                 + "\n   appliquée sur ce téléphone le " + date(sp.getLong("applique_ms", 0L));
+    }
+
+    /** Nom de l'appli affiché dans l'appli (accueil, connexion) : clé "titre" de la configuration, sinon « Sossokouamé ». */
+    static String titreApp(Context c) {
+        JSONObject cfg = contenu(c);
+        String t = cfg == null ? "" : cfg.optString("titre", "").trim();
+        return t.isEmpty() ? "Sossokouamé" : t;
     }
 
     /** Annonce déjà vue (une annonce ne s'affiche qu'une fois par identifiant). */

@@ -5,7 +5,9 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -22,8 +24,14 @@ final class FbLien {
     /** Lien direct + User-Agent à utiliser pour le lire. */
     static final class Direct {
         final String url, ua;
+        /** Façons de lire la vidéo, de la plus simple à la plus complexe : {image(+son), son séparé ou null}. */
+        final List<String[]> variantes;
         final long cree = System.currentTimeMillis();
-        Direct(String url, String ua) { this.url = url; this.ua = ua; }
+        Direct(List<String[]> variantes, String ua) {
+            this.variantes = variantes;
+            this.url = variantes.get(0)[0];
+            this.ua = ua;
+        }
     }
 
     private static final String UA_PC = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
@@ -60,9 +68,9 @@ final class FbLien {
         for (String[] e : essais) {
             try {
                 String html = lirePage(e[0], e[1]);
-                String url = trouver(html);
-                if (url != null) {
-                    d = new Direct(url, e[1]);
+                List<String[]> v = variantes(html);
+                if (!v.isEmpty()) {
+                    d = new Direct(v, e[1]);
                     synchronized (FbLien.class) { CACHE.put(lien, d); }
                     return d;
                 }
@@ -73,8 +81,13 @@ final class FbLien {
         return null;
     }
 
-    private static String trouver(String html) {
-        if (html == null) return null;
+    /**
+     * Toutes les façons de lire la vidéo trouvées dans la page : qualité standard, haute qualité, puis flux séparés
+     * image + son (cas des longues vidéos / films, que Facebook ne donne pas en un seul fichier).
+     */
+    private static List<String[]> variantes(String html) {
+        List<String[]> res = new ArrayList<>();
+        if (html == null) return res;
         String sd = premier(html, CLES_SD), hd = premier(html, CLES_HD);
         if (sd == null || hd == null) {
             Matcher m = PROG.matcher(html);
@@ -95,7 +108,73 @@ final class FbLien {
                 if (u.startsWith("http") && (u.contains(".mp4") || u.contains("fbcdn"))) { sd = u; break; }
             }
         }
-        return sd != null ? sd : hd;
+        ajouter(res, sd, null);
+        ajouter(res, hd, null);
+        String[] dash = dash(html);
+        if (dash != null) ajouter(res, dash[0], dash[1]);
+        return res;
+    }
+
+    private static void ajouter(List<String[]> res, String video, String audio) {
+        if (video == null) return;
+        String v = nettoyer(video);
+        String a = audio == null ? null : nettoyer(audio);
+        for (String[] x : res) if (x[0].equals(v) && ((x[1] == null) == (a == null))) return;
+        res.add(new String[]{v, a});
+    }
+
+    /** Enlève bytestart / byteend : ces liens ne désignent qu'un morceau ; sans eux on lit le fichier entier. */
+    static String nettoyer(String url) {
+        int q = url.indexOf('?');
+        if (q < 0) return url;
+        StringBuilder sb = new StringBuilder(url.substring(0, q));
+        boolean premier = true;
+        for (String p : url.substring(q + 1).split("&")) {
+            if (p.startsWith("bytestart=") || p.startsWith("byteend=")) continue;
+            sb.append(premier ? '?' : '&').append(p);
+            premier = false;
+        }
+        return sb.toString();
+    }
+
+    private static final Pattern ENSEMBLE = Pattern.compile("<AdaptationSet([^>]*)>(.*?)</AdaptationSet>", Pattern.DOTALL);
+    private static final Pattern REPRES = Pattern.compile("<Representation([^>]*)>(.*?)</Representation>", Pattern.DOTALL);
+    private static final Pattern BASEURL = Pattern.compile("<BaseURL>\\s*([^<\\s]+)\\s*</BaseURL>");
+    private static final Pattern HAUT = Pattern.compile("height=\"(\\d+)\"");
+    private static final Pattern DEBIT = Pattern.compile("bandwidth=\"(\\d+)\"");
+
+    /** Cherche dans le manifeste DASH de la page : une image (720 p au plus) et un son. Renvoie {image, son} ou null. */
+    private static String[] dash(String html) {
+        int i = html.indexOf("dash_manifest");
+        if (i < 0) i = html.indexOf("<MPD");
+        if (i < 0) return null;
+        String bloc = html.substring(i, Math.min(html.length(), i + 120000));
+        bloc = decoder(bloc).replace("\\\"", "\"").replace("\\u003C", "<").replace("\\u003E", ">");
+        String video = null, son = null;
+        int hautVideo = -1;
+        long debitSon = -1;
+        Matcher ens = ENSEMBLE.matcher(bloc);
+        while (ens.find()) {
+            boolean audio = ens.group(1).toLowerCase(java.util.Locale.ROOT).contains("audio");
+            Matcher rep = REPRES.matcher(ens.group(2));
+            while (rep.find()) {
+                Matcher b = BASEURL.matcher(rep.group(2));
+                if (!b.find()) continue;
+                String url = decoder(b.group(1));
+                String attrs = rep.group(1);
+                if (audio || attrs.toLowerCase(java.util.Locale.ROOT).contains("audio")) {
+                    Matcher d = DEBIT.matcher(attrs);
+                    long deb = d.find() ? Long.parseLong(d.group(1)) : 0;
+                    if (deb > debitSon) { debitSon = deb; son = url; }
+                } else {
+                    Matcher h = HAUT.matcher(attrs);
+                    int haut = h.find() ? Integer.parseInt(h.group(1)) : 0;
+                    boolean mieux = video == null || (haut <= 720 && (hautVideo > 720 || haut > hautVideo));
+                    if (mieux) { hautVideo = haut; video = url; }
+                }
+            }
+        }
+        return video == null ? null : new String[]{video, son};
     }
 
     private static String lirePage(String adresse, String ua) throws Exception {

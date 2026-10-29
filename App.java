@@ -32,6 +32,7 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         ctx = getApplicationContext();
+        Ui.theme(Config.contenu(this));   // design (couleurs) reçu de la base, appliqué dès le démarrage
         Compte.init(this);
         Securite.init(this);
         Securite.verrouille = Compte.connecte() && Securite.pinActif();

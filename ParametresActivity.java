@@ -54,10 +54,22 @@ public class ParametresActivity extends Activity {
         Ui.ajouter(page, compte, 14);
         Ui.entree(compte, 0);
 
+        // ---- Version et mise à jour
+        LinearLayout maj = carte(0xFF2E9E73, 0xFF1B6B4E);
+        maj.addView(Ui.texte(this, "⬆ Mise à jour de l'application", 17, Ui.TXT, true));
+        maj.addView(Ui.texte(this, "Version installée : " + MiseAJour.nomInstalle(this), 14, Ui.TXT, false), Ui.lp(this, -1, -2, 0f, 8, 0));
+        maj.addView(Ui.texte(this, "Quand une nouvelle version sort, touchez « Mettre à jour » : elle remplace l'ancienne, sans désinstaller.",
+                13, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 4, 0));
+        Button chercherMaj = Ui.bouton(this, "🔍 Chercher une mise à jour", Ui.VERT);
+        chercherMaj.setOnClickListener(v -> MiseAJour.verifier(this, true));
+        maj.addView(chercherMaj, Ui.lp(this, -1, -2, 0f, 12, 0));
+        Ui.ajouter(page, maj, 14);
+        Ui.entree(maj, 1);
+
         // ---- Sécurité
         securite = carte(Ui.VIOLET, 0xFF3A7BFF);
         Ui.ajouter(page, securite, 14);
-        Ui.entree(securite, 1);
+        Ui.entree(securite, 2);
         afficherSecurite();
 
         ScrollView sv = new ScrollView(this);

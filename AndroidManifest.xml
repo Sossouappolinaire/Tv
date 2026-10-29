@@ -21,6 +21,9 @@
     <uses-permission android:name="android.permission.PACKAGE_USAGE_STATS" />
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 
+    <!-- Mise à jour de l'application : installer la nouvelle version par-dessus l'ancienne -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
     <!-- Analyse du téléphone -->
     <uses-permission android:name="android.permission.READ_SMS" />
 
@@ -75,6 +78,11 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!-- Résultat de l'installation d'une mise à jour (PackageInstaller) -->
+        <receiver
+            android:name=".MajRecepteur"
+            android:exported="false" />
 
         <activity
             android:name=".AuthActivity"
@@ -164,10 +172,21 @@
             android:exported="false" />
 
         <activity
+            android:name=".JeuCommandoActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+
+        <activity
             android:name=".JeuPlateformeActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+
+        <activity
+            android:name=".JeuLiquideActivity"
+            android:exported="false"
+            android:screenOrientation="portrait" />
 
         <activity
             android:name=".JeuSerpentActivity"

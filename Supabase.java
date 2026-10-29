@@ -523,8 +523,12 @@ final class Supabase {
     }
 
     private static HttpURLConnection stockage(String methode, String nom) throws Exception {
+        return stockageDans("contenu-app", methode, nom);
+    }
+
+    private static HttpURLConnection stockageDans(String dossier, String methode, String nom) throws Exception {
         String chemin = java.net.URLEncoder.encode(nom, "UTF-8").replace("+", "%20");
-        String base = "POST".equals(methode) ? "/storage/v1/object/contenu-app/" : "/storage/v1/object/authenticated/contenu-app/";
+        String base = "POST".equals(methode) ? "/storage/v1/object/" + dossier + "/" : "/storage/v1/object/authenticated/" + dossier + "/";
         HttpURLConnection c = (HttpURLConnection) new URL(URL_PROJET + base + chemin).openConnection();
         c.setRequestMethod(methode);
         c.setRequestProperty("apikey", CLE);
@@ -562,6 +566,71 @@ final class Supabase {
         } finally {
             if (c != null) c.disconnect();
         }
+    }
+
+    // ---------- Mise à jour de l'application (APK dans la base, voir section10_mise_a_jour_apk.sql) ----------
+
+    /** Tout compte connecté : dernière version de l'appli publiée (ok, aucune, version_code, version_name, note, apk, taille, cree_ms…), ou null. */
+    static JSONObject majDerniere() {
+        try {
+            String r = rest("POST", "rpc/maj_derniere", "{}", null);
+            return r == null ? null : new JSONObject(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Ouvre le téléchargement d'un APK publié (compte connecté). À appeler hors du thread principal. */
+    static HttpURLConnection ouvrirApk(String nom) throws Exception {
+        HttpURLConnection c = stockageDans("apk-app", "GET", nom);
+        c.setReadTimeout(120000);
+        return c;
+    }
+
+    /** Admin : envoie un APK dans la base. Renvoie "" si c'est fait, sinon un code d'erreur. */
+    static String envoyerApk(String nom, InputStream in, long taille) {
+        HttpURLConnection c = null;
+        try {
+            c = stockageDans("apk-app", "POST", nom);
+            c.setRequestProperty("Content-Type", "application/vnd.android.package-archive");
+            c.setRequestProperty("x-upsert", "true");
+            c.setReadTimeout(180000);
+            c.setDoOutput(true);
+            if (taille > 0) c.setFixedLengthStreamingMode(taille);
+            else c.setChunkedStreamingMode(65536);
+            java.io.OutputStream out = c.getOutputStream();
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.close();
+            int code = c.getResponseCode();
+            return code < 300 ? "" : "http " + code;
+        } catch (Exception e) {
+            return "reseau";
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
+    /** Admin : annonce la version à tous les comptes (l'APK doit déjà être envoyé). "" si c'est fait, sinon un code d'erreur. */
+    static String adminMajPublier(int versionCode, String versionName, String note, String apk, long taille, boolean obligatoire) {
+        try {
+            JSONObject o = new JSONObject().put("p_version_code", versionCode).put("p_version_name", versionName)
+                    .put("p_apk", apk).put("p_taille", taille).put("p_obligatoire", obligatoire);
+            if (note != null && !note.isEmpty()) o.put("p_note", note);
+            String r = rest("POST", "rpc/admin_maj_publier", o.toString(), null);
+            if (r == null) return derniereErreur.isEmpty() ? "reseau" : derniereErreur;
+            JSONObject j = new JSONObject(r);
+            return j.optBoolean("ok") ? "" : j.optString("erreur", "refuse");
+        } catch (Exception e) {
+            return "reseau";
+        }
+    }
+
+    /** Admin : retire la dernière version publiée. */
+    static boolean adminMajRetirer() {
+        String r = rest("POST", "rpc/admin_maj_retirer_derniere", "{}", null);
+        return r != null;
     }
 
     /** Admin : retire une vidéo de la TV (illisible) ou la remet. */

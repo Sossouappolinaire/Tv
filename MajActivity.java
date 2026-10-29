@@ -3,14 +3,17 @@ package bj.radio;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageInfo;
 import android.database.Cursor;
 import android.graphics.Typeface;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.OpenableColumns;
 import android.text.InputType;
 import android.view.Gravity;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -18,7 +21,11 @@ import android.widget.TextView;
 
 import org.json.JSONObject;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 
 /**
  * Administrateur : cherche la dernière mise à jour dans la base, affiche la dernière mise à jour appliquée
@@ -30,6 +37,7 @@ public class MajActivity extends Activity {
     private static final String EXEMPLE = "{\n"
             + "  \"titre\": \"Sossokouamé\",\n"
             + "  \"bandeau\": \"Bienvenue !\",\n"
+            + "  \"theme\": {\"fond_haut\": \"#6A6E77\", \"fond_bas\": \"#5C6068\", \"jaune\": \"#FFC857\", \"rayon\": 1},\n"
             + "  \"annonce\": {\"id\": \"a1\", \"titre\": \"Nouveau\", \"message\": \"Une nouveauté est arrivée.\"},\n"
             + "  \"tuiles\": [\n"
             + "    {\"id\": \"radio\", \"titre\": \"Radio\", \"c1\": \"#FF6B35\", \"c2\": \"#FF3D6E\"},\n"
@@ -44,10 +52,13 @@ public class MajActivity extends Activity {
             + "  }\n"
             + "}";
 
-    private TextView derniereTxt, statut;
-    private EditText editeur, note;
+    private TextView derniereTxt, statut, apkInfo;
+    private EditText editeur, note, noteApk;
+    private CheckBox apkObligatoire;
     private Button chercher, publier;
     private static final int CODE_ZIP = 21;
+    private static final int CODE_APK = 22;
+    private static final long APK_MAX = 50L * 1024 * 1024;   // limite du stockage Supabase (plan gratuit)
 
     @Override
     protected void onCreate(Bundle b) {
@@ -78,6 +89,41 @@ public class MajActivity extends Activity {
 
         statut = Ui.texte(this, "", 14, Ui.JAUNE, false);
         Ui.ajouter(c, statut, 10);
+
+        Ui.ajouter(c, Ui.texte(this, "📱 Nouvelle version de l'application (APK)", 18, Ui.TXT, true), 20);
+        Ui.ajouter(c, Ui.texte(this, "Choisissez le nouvel APK : il est copié dans la base, puis TOUS les comptes voient « Nouvelle mise à jour » "
+                + "avec la date de sortie et la remplacent en un geste. Le numéro de version est lu dans l'APK lui-même "
+                + "(versionCode dans app.gradle : il doit augmenter à chaque version).", 13, Ui.TXT2, false), 4);
+        apkInfo = Ui.texte(this, "", 14, Ui.JAUNE, false);
+        Ui.ajouter(c, apkInfo, 8);
+        noteApk = Ui.champ(this, "Nouveautés de cette version (facultatif)");
+        Ui.ajouter(c, noteApk, 8);
+        apkObligatoire = new CheckBox(this);
+        apkObligatoire.setText("Mise à jour obligatoire (impossible de la repousser)");
+        apkObligatoire.setTextColor(Ui.TXT);
+        Ui.ajouter(c, apkObligatoire, 4);
+        Button apkBtn = Ui.bouton(this, "📱 Choisir l'APK et publier", Ui.VERT);
+        apkBtn.setOnClickListener(v -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            startActivityForResult(i, CODE_APK);
+        });
+        Ui.ajouter(c, apkBtn, 8);
+        Button apkRetirer = Ui.boutonContour(this, "↩ Retirer la dernière version publiée", Ui.TXT);
+        apkRetirer.setOnClickListener(v -> new AlertDialog.Builder(this)
+                .setTitle("Retirer la dernière version ?")
+                .setMessage("Les comptes ne verront plus cette mise à jour. Ceux qui l'ont déjà installée la gardent.")
+                .setPositiveButton("Retirer", (d, w) -> new Thread(() -> {
+                    final boolean ok = Supabase.adminMajRetirer();
+                    runOnUiThread(() -> {
+                        statut.setText(ok ? "✅ Dernière version retirée." : "⚠ Retrait impossible.");
+                        rafraichirApk();
+                    });
+                }).start())
+                .setNegativeButton("Annuler", null)
+                .show());
+        Ui.ajouter(c, apkRetirer, 8);
 
         Ui.ajouter(c, Ui.texte(this, "📦 Contenu (zip)", 18, Ui.TXT, true), 20);
         Ui.ajouter(c, Ui.texte(this, "Envoyez un zip de pages web (index.html, images, scripts). Il est copié dans la base et chaque appli le "
@@ -123,6 +169,7 @@ public class MajActivity extends Activity {
 
         remplirEditeur();
         rafraichirEntete();
+        rafraichirApk();
         chercher();
     }
 
@@ -175,6 +222,10 @@ public class MajActivity extends Activity {
     @Override
     protected void onActivityResult(int code, int resultat, Intent data) {
         super.onActivityResult(code, resultat, data);
+        if (code == CODE_APK) {
+            apkChoisi(resultat, data);
+            return;
+        }
         if (code != CODE_ZIP || resultat != RESULT_OK || data == null || data.getData() == null) return;
         final Uri uri = data.getData();
         String nom = "contenu.zip";
@@ -215,6 +266,109 @@ public class MajActivity extends Activity {
                     statut.setText("⚠ Envoi impossible (" + e2 + "). Taille maximale : 50 Mo.");
                 }
                 rafraichirEntete();
+            });
+        }).start();
+    }
+
+    // ------------------------------------------------------------------ nouvelle version de l'appli (APK)
+
+    private void rafraichirApk() {
+        new Thread(() -> {
+            final JSONObject r = Supabase.majDerniere();
+            runOnUiThread(() -> {
+                String ici = "Installée sur ce téléphone : " + MiseAJour.nomInstalle(this) + " (n° " + MiseAJour.versionInstallee(this) + ")";
+                if (r == null || !r.optBoolean("ok")) {
+                    apkInfo.setText(ici + "\nVersion publiée : impossible de consulter la base.");
+                } else if (r.optBoolean("aucune")) {
+                    apkInfo.setText(ici + "\nAucune version publiée dans la base pour le moment.");
+                } else {
+                    apkInfo.setText(ici + "\nPubliée pour tous : " + r.optString("version_name") + " (n° " + r.optLong("version_code")
+                            + "), sortie le " + Config.date(r.optLong("cree_ms", 0L)));
+                }
+            });
+        }).start();
+    }
+
+    private void apkChoisi(int resultat, Intent data) {
+        if (resultat != RESULT_OK || data == null || data.getData() == null) return;
+        final Uri uri = data.getData();
+        statut.setText("Lecture de l'APK…");
+        new Thread(() -> {
+            final File f = new File(getCacheDir(), "maj_admin.apk");
+            try (InputStream in = getContentResolver().openInputStream(uri); OutputStream out = new FileOutputStream(f)) {
+                if (in == null) throw new Exception("lecture");
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            } catch (Exception e) {
+                runOnUiThread(() -> statut.setText("⚠ Lecture du fichier impossible."));
+                return;
+            }
+            PackageInfo pi = getPackageManager().getPackageArchiveInfo(f.getAbsolutePath(), 0);
+            if (pi == null) {
+                runOnUiThread(() -> statut.setText("⚠ Ce fichier n'est pas un APK valide."));
+                return;
+            }
+            if (!getPackageName().equals(pi.packageName)) {
+                final String autre = pi.packageName;
+                runOnUiThread(() -> statut.setText("⚠ Cet APK est une autre application (" + autre + ")."));
+                return;
+            }
+            final long taille = f.length();
+            if (taille > APK_MAX) {
+                runOnUiThread(() -> statut.setText("⚠ APK trop gros (" + Supabase.taille(taille) + ") : maximum 50 Mo."));
+                return;
+            }
+            final long vc = Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode;
+            final String vn = pi.versionName == null ? String.valueOf(vc) : pi.versionName;
+            final boolean memeSignature = MiseAJour.memeSignatureQueInstallee(this, f);
+            runOnUiThread(() -> confirmerApk(f, (int) vc, vn, taille, memeSignature));
+        }).start();
+    }
+
+    private void confirmerApk(final File f, final int versionCode, final String versionName, final long taille, boolean memeSignature) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Version ").append(versionName).append(" (n° ").append(versionCode).append(")\nTaille : ").append(Supabase.taille(taille));
+        sb.append("\n\nTous les comptes verront « Nouvelle mise à jour » à leur prochaine ouverture.");
+        if (!memeSignature) {
+            sb.append("\n\n⚠ Cet APK n'a PAS la même signature que l'appli installée sur ce téléphone : les téléphones qui ont déjà l'appli "
+                    + "ne pourront pas la remplacer sans la désinstaller. Compilez avec le fichier sossokouame.keystore.");
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Publier cette version pour tous ?")
+                .setMessage(sb.toString())
+                .setPositiveButton("Publier", (d, w) -> publierApk(f, versionCode, versionName, taille))
+                .setNegativeButton("Annuler", null)
+                .show();
+    }
+
+    private void publierApk(final File f, final int versionCode, final String versionName, final long taille) {
+        statut.setText("Envoi de l'APK (" + Supabase.taille(taille) + ")…");
+        final String nomApk = "sossokouame-" + versionCode + ".apk";
+        final String n = noteApk.getText().toString().trim();
+        final boolean obligatoire = apkObligatoire.isChecked();
+        new Thread(() -> {
+            String err;
+            try (InputStream in = new FileInputStream(f)) {
+                err = Supabase.envoyerApk(nomApk, in, taille);
+            } catch (Exception e) {
+                err = "lecture";
+            }
+            if (err.isEmpty()) err = Supabase.adminMajPublier(versionCode, versionName, n, nomApk, taille, obligatoire);
+            final String e2 = err;
+            runOnUiThread(() -> {
+                if (e2.isEmpty()) {
+                    statut.setText("✅ Version " + versionName + " publiée : tous les comptes la verront à leur prochaine ouverture.");
+                    noteApk.setText("");
+                    apkObligatoire.setChecked(false);
+                } else if ("version_trop_ancienne".equals(e2)) {
+                    statut.setText("⚠ Une version égale ou plus récente est déjà publiée. Augmentez versionCode dans app.gradle, recompilez, puis recommencez.");
+                } else if ("apk_introuvable".equals(e2) || e2.startsWith("http")) {
+                    statut.setText("⚠ Envoi refusé (" + e2 + "). Avez-vous exécuté section10_mise_a_jour_apk.sql dans Supabase ?");
+                } else {
+                    statut.setText("⚠ Publication impossible (" + e2 + ").");
+                }
+                rafraichirApk();
             });
         }).start();
     }

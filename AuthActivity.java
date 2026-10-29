@@ -63,7 +63,7 @@ public class AuthActivity extends Activity {
         root.addView(logo);
         animations.add(Ui.flotter(logo, 0));
 
-        TextView titre = Ui.texte(this, "Sossokouamé", 32, Ui.JAUNE, true);
+        TextView titre = Ui.texte(this, Config.titreApp(this), 32, Ui.JAUNE, true);
         titre.setGravity(Gravity.CENTER);
         root.addView(titre, Ui.lp(this, -1, -2, 0f, 4, 0));
         animations.add(Ui.titreColore(titre));

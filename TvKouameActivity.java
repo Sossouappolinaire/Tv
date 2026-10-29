@@ -24,8 +24,10 @@ import androidx.media3.common.PlaybackException;
 import androidx.media3.common.Player;
 import androidx.media3.common.util.UnstableApi;
 import androidx.media3.datasource.DefaultHttpDataSource;
+import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.exoplayer.ExoPlayer;
 import androidx.media3.exoplayer.source.MediaSource;
+import androidx.media3.exoplayer.source.MergingMediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import androidx.media3.ui.PlayerView;
 
@@ -80,6 +82,8 @@ public class TvKouameActivity extends Activity {
     private boolean actif = false, differe = false, pleinEcran = false, syncEnCours = false;
     private long debutCourant = -1;
     private int courant = -1, generation = 0, essaisProg = 0;
+    private FbLien.Direct directCourant = null;   // façons de lire le programme en cours
+    private int variante = 0;                      // laquelle on essaie (0 = la plus simple)
     private String prefetch = "";
 
     // ------------------------------------------------------------------ cycle de vie
@@ -212,11 +216,21 @@ public class TvKouameActivity extends Activity {
             @Override
             public void onPlayerError(PlaybackException e) {
                 if (courant < 0 || courant >= progs.size()) return;
+                if (directCourant != null && variante + 1 < directCourant.variantes.size()) {   // autre façon de lire la même vidéo
+                    variante++;
+                    demarrer(directCourant, generation);
+                    return;
+                }
                 if (essaisProg == 0) {          // le lien Facebook a peut-être expiré : on le cherche à nouveau
                     FbLien.oublier(progs.get(courant).lien);
                     relancer(true);
                 } else {
-                    voile("⚠ Ce programme ne peut pas être lu (" + e.getErrorCodeName() + "). Le suivant démarre à l'heure prévue.");
+                    String detail = e.getErrorCodeName();
+                    Throwable cause = e.getCause();
+                    if (cause instanceof HttpDataSource.InvalidResponseCodeException) {
+                        detail += ", http " + ((HttpDataSource.InvalidResponseCodeException) cause).responseCode;
+                    }
+                    voile("⚠ Ce programme ne peut pas être lu (" + detail + "). Le suivant démarre à l'heure prévue.");
                 }
             }
 
@@ -370,6 +384,8 @@ public class TvKouameActivity extends Activity {
         courant = idx;
         debutCourant = debut;
         differe = false;
+        variante = 0;
+        directCourant = null;
         essaisProg = reessai ? 1 : 0;
         final int gen = ++generation;
         final Prog g = progs.get(idx);
@@ -412,22 +428,31 @@ public class TvKouameActivity extends Activity {
                 .setConnectTimeoutMs(15000)
                 .setReadTimeoutMs(20000)
                 .setDefaultRequestProperties(entetes);
-        MediaSource src = new ProgressiveMediaSource.Factory(f).createMediaSource(MediaItem.fromUri(d.url));
+        directCourant = d;
+        String[] v = d.variantes.get(Math.min(variante, d.variantes.size() - 1));
+        ProgressiveMediaSource.Factory usine = new ProgressiveMediaSource.Factory(f);
+        MediaSource src = usine.createMediaSource(MediaItem.fromUri(v[0]));
+        if (v[1] != null) src = new MergingMediaSource(src, usine.createMediaSource(MediaItem.fromUri(v[1])));   // image et son séparés
         player.setMediaSource(src, off < 3000 ? 0 : off);
         player.prepare();
         player.play();
         voile("⏳ Chargement de la vidéo…");
         final int g2 = gen;
-        vue.postDelayed(() -> {             // si rien ne démarre en 30 s : nouvelle tentative, puis message clair
+        vue.postDelayed(() -> {             // si rien ne démarre en 45 s : autre façon de lire, nouvelle tentative, puis message clair
             if (g2 != generation || !actif || player == null || courant < 0 || courant >= progs.size()) return;
             if (player.getPlaybackState() == Player.STATE_READY) return;
+            if (directCourant != null && variante + 1 < directCourant.variantes.size()) {
+                variante++;
+                demarrer(directCourant, g2);
+                return;
+            }
             if (essaisProg == 0) {
                 FbLien.oublier(progs.get(courant).lien);
                 relancer(true);
             } else {
                 voile("⚠ La vidéo ne démarre pas. Vérifiez votre connexion internet.");
             }
-        }, 30000);
+        }, 45000);
     }
 
     // ------------------------------------------------------------------ affichage

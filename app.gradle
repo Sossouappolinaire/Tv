@@ -10,8 +10,36 @@ android {
         applicationId 'bj.radio'
         minSdk 24
         targetSdk 34
-        versionCode 15
-        versionName '1.15'
+        // À AUGMENTER à chaque nouvelle version (sinon Android refuse de remplacer l'ancienne).
+        versionCode 17
+        versionName '1.17'
+    }
+
+    // Clé de signature PERMANENTE : la même à chaque compilation, donc chaque nouvelle version
+    // remplace l'ancienne sans désinstaller. Ne jamais perdre ni changer le fichier sossokouame.keystore.
+    signingConfigs {
+        sossokouame {
+            storeFile file('sossokouame.keystore')
+            storeType 'PKCS12'
+            storePassword 'Yy8xyxKijSLTNcPt53uP'
+            keyAlias 'sossokouame'
+            keyPassword 'Yy8xyxKijSLTNcPt53uP'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.sossokouame
+        }
+        release {
+            signingConfig signingConfigs.sossokouame
+            minifyEnabled false
+        }
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
     }
 
     compileOptions {

@@ -13,7 +13,7 @@ create table if not exists public.scores_jeux (
     score       integer     not null default 0,
     maj         timestamptz not null default now(),
     primary key (utilisateur, jeu),
-    constraint jeu_connu       check (jeu in ('panda', 'mario', 'serpent')),
+    constraint jeu_connu       check (jeu in ('panda', 'mario', 'serpent', 'commando', 'liquide')),
     constraint score_borne     check (score between 0 and 1000000),
     constraint nom_court_score check (nom is null or char_length(nom) <= 100)
 );
@@ -37,7 +37,7 @@ declare
     v_score integer;
 begin
     if v_uid is null then raise exception 'connexion requise'; end if;
-    if p_jeu is null or p_jeu not in ('panda', 'mario', 'serpent') then raise exception 'jeu inconnu'; end if;
+    if p_jeu is null or p_jeu not in ('panda', 'mario', 'serpent', 'commando', 'liquide') then raise exception 'jeu inconnu'; end if;
     v_score := least(greatest(coalesce(p_score, 0), 0), 1000000);
     select nullif(btrim(nom), '') into v_nom from public.profils where id = v_uid;
 

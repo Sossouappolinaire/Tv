@@ -26,6 +26,7 @@ public class MainActivity extends Activity {
 
     private LinearLayout mosaique;
     private LinearLayout ligne;
+    private TextView bandeauMaj;
     private int rang = 0;
     /** Une tuile de l'accueil (réglages d'origine, modifiables par le fichier de configuration de la base). */
     private static final class T {
@@ -64,7 +65,7 @@ public class MainActivity extends Activity {
         root.setPadding(p, p * 2, p, p);
 
         final JSONObject cfg = Config.contenu(this);
-        String titreApp = cfg != null && !cfg.optString("titre", "").trim().isEmpty() ? cfg.optString("titre").trim() : "Sossokouamé";
+        String titreApp = Config.titreApp(this);
         TextView titre = Ui.texte(this, titreApp, 34, Ui.JAUNE, true);
         titre.setGravity(Gravity.CENTER);
         root.addView(titre);
@@ -84,6 +85,20 @@ public class MainActivity extends Activity {
             bd.setGravity(Gravity.CENTER);
             root.addView(bd, Ui.lp(this, -1, -2, 0f, 10, 0));
         }
+
+        // Mise à jour de l'appli : bandeau visible tant que la nouvelle version n'est pas installée.
+        bandeauMaj = Ui.texte(this, "", 15, 0xFF222222, true);
+        bandeauMaj.setGravity(Gravity.CENTER);
+        bandeauMaj.setBackground(Ui.rond(Ui.JAUNE, 16, this));
+        int pm = Ui.dp(this, 12);
+        bandeauMaj.setPadding(pm, pm, pm, pm);
+        bandeauMaj.setVisibility(View.GONE);
+        bandeauMaj.setOnClickListener(v -> {
+            JSONObject r = MiseAJour.derniere;
+            if (r != null && MiseAJour.disponible(this, r)) MiseAJour.proposer(this, r);
+        });
+        root.addView(bandeauMaj, Ui.lp(this, -1, -2, 0f, 14, 0));
+        afficherBandeauMaj();
 
         mosaique = new LinearLayout(this);
         mosaique.setOrientation(LinearLayout.VERTICAL);
@@ -112,6 +127,18 @@ public class MainActivity extends Activity {
         animations.add(Ui.fondAnime(sv));
         setContentView(sv);
         afficherAnnonce(cfg);
+    }
+
+    /** Affiche (ou cache) le bandeau « Nouvelle mise à jour » selon la dernière réponse de la base. */
+    private void afficherBandeauMaj() {
+        if (bandeauMaj == null) return;
+        JSONObject r = MiseAJour.derniere;
+        if (r != null && MiseAJour.disponible(this, r)) {
+            bandeauMaj.setText("🆕 " + MiseAJour.resume(r) + "\nTouchez ici pour mettre à jour");
+            bandeauMaj.setVisibility(View.VISIBLE);
+        } else {
+            bandeauMaj.setVisibility(View.GONE);
+        }
     }
 
     private void def(List<T> liste, String id, String emoji, String titre, String desc, int c1, int c2, Class<?> cible) {
@@ -226,6 +253,14 @@ public class MainActivity extends Activity {
             Paquets.synchroniser(this);   // zips de contenu : téléchargés / remplacés s'il y a du nouveau
             if (nouveau) runOnUiThread(() -> {
                 if (!isFinishing()) recreate();
+            });
+            // Nouvelle version de l'application (APK dans la base) : bandeau + fenêtre « Mettre à jour » avec la date de sortie.
+            final JSONObject maj = Supabase.majDerniere();
+            MiseAJour.derniere = maj;
+            runOnUiThread(() -> {
+                if (isFinishing()) return;
+                afficherBandeauMaj();
+                if (!nouveau && MiseAJour.disponible(this, maj)) MiseAJour.verifierAvecReponse(this, maj);
             });
         }).start();
     }

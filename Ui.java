@@ -28,21 +28,56 @@ import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.TextView;
 
+import org.json.JSONObject;
+
 import java.util.List;
 
 /** Petits outils de style partagés : thème gris cendre « Sossokouamé » (dégradés, boutons, animations). */
 public class Ui {
-    static final int BG = 0xFF5C6068;        // fond gris cendre (changez cette valeur pour l'éclaircir ou l'assombrir)
-    static final int BG_HAUT = 0xFF6A6E77;   // haut du dégradé de l'accueil
-    static final int CARD = 0xFF474B53;
-    static final int ACCENT = 0xFFFF6B35;
-    static final int VIOLET = 0xFF7B4DFF;
-    static final int JAUNE = 0xFFFFC857;
-    static final int TXT = 0xFFFFFFFF;
-    static final int TXT2 = 0xFFE3E5EA;
-    static final int ROSE = 0xFFFF4D8D;
-    static final int VERT = 0xFF2E9E73;
-    static final int BLEU = 0xFF1877F2;
+    // Couleurs du thème : valeurs d'origine ci-dessous, modifiables à distance par la clé "theme" du fichier de configuration
+    // (voir Ui.theme). Elles ne sont plus « final » pour pouvoir changer sans recompiler.
+    static final int D_BG = 0xFF5C6068, D_BG_HAUT = 0xFF6A6E77, D_CARD = 0xFF474B53, D_ACCENT = 0xFFFF6B35, D_VIOLET = 0xFF7B4DFF,
+            D_JAUNE = 0xFFFFC857, D_TXT = 0xFFFFFFFF, D_TXT2 = 0xFFE3E5EA, D_ROSE = 0xFFFF4D8D, D_VERT = 0xFF2E9E73, D_BLEU = 0xFF1877F2;
+    static int BG = D_BG;               // fond gris cendre (bas du dégradé)
+    static int BG_HAUT = D_BG_HAUT;     // haut du dégradé de l'accueil
+    static int CARD = D_CARD;
+    static int ACCENT = D_ACCENT;
+    static int VIOLET = D_VIOLET;
+    static int JAUNE = D_JAUNE;
+    static int TXT = D_TXT;
+    static int TXT2 = D_TXT2;
+    static int ROSE = D_ROSE;
+    static int VERT = D_VERT;
+    static int BLEU = D_BLEU;
+    /** Multiplicateur des coins arrondis (1 = d'origine, 0 = angles droits, 2 = très arrondi). */
+    static float RAYON = 1f;
+
+    private static int coul(JSONObject t, String cle, int defaut) {
+        try {
+            String v = t == null ? "" : t.optString(cle, "").trim();
+            return v.isEmpty() ? defaut : Color.parseColor(v);
+        } catch (Exception e) {
+            return defaut;
+        }
+    }
+
+    /** Applique (ou remet d'origine si null) le thème du fichier de configuration : { "theme": { "fond_haut": "#RRGGBB", … } }. */
+    static void theme(JSONObject cfg) {
+        JSONObject t = cfg == null ? null : cfg.optJSONObject("theme");
+        BG_HAUT = coul(t, "fond_haut", D_BG_HAUT);
+        BG = coul(t, "fond_bas", D_BG);
+        CARD = coul(t, "carte", D_CARD);
+        ACCENT = coul(t, "accent", D_ACCENT);
+        VIOLET = coul(t, "violet", D_VIOLET);
+        JAUNE = coul(t, "jaune", D_JAUNE);
+        TXT = coul(t, "texte", D_TXT);
+        TXT2 = coul(t, "texte2", D_TXT2);
+        ROSE = coul(t, "rose", D_ROSE);
+        VERT = coul(t, "vert", D_VERT);
+        BLEU = coul(t, "bleu", D_BLEU);
+        double r = t == null ? 1.0 : t.optDouble("rayon", 1.0);
+        RAYON = (float) Math.max(0.0, Math.min(2.5, Double.isNaN(r) ? 1.0 : r));
+    }
 
     static int dp(Context c, int v) {
         return (int) (v * c.getResources().getDisplayMetrics().density + 0.5f);
@@ -51,7 +86,7 @@ public class Ui {
     static GradientDrawable rond(int couleur, int rayonDp, Context c) {
         GradientDrawable g = new GradientDrawable();
         g.setColor(couleur);
-        g.setCornerRadius(dp(c, rayonDp));
+        g.setCornerRadius(dp(c, rayonDp) * RAYON);
         return g;
     }
 
@@ -102,7 +137,7 @@ public class Ui {
     /** Dégradé diagonal à coins arrondis. */
     static GradientDrawable degrade(int c1, int c2, int rayonDp, Context c) {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, new int[]{c1, c2});
-        g.setCornerRadius(dp(c, rayonDp));
+        g.setCornerRadius(dp(c, rayonDp) * RAYON);
         return g;
     }
 
@@ -253,8 +288,19 @@ public class Ui {
     static Animator fondAnime(View v) {
         final GradientDrawable g = fond();
         v.setBackground(g);
-        final int[] haut = {BG_HAUT, 0xFF6F6A82, 0xFF607A80, 0xFF7A6A72, BG_HAUT};
-        final int[] bas = {BG, 0xFF54506A, 0xFF4C5E64, 0xFF5E5058, BG};
+        final int[] teintesHaut = {0xFF6F6A82, 0xFF607A80, 0xFF7A6A72};
+        final int[] teintesBas = {0xFF54506A, 0xFF4C5E64, 0xFF5E5058};
+        final ArgbEvaluator ev0 = new ArgbEvaluator();
+        // Teintes douces autour des couleurs du thème (même rendu qu'avant avec le thème d'origine).
+        final int[] haut = new int[5];
+        final int[] bas = new int[5];
+        haut[0] = haut[4] = BG_HAUT;
+        bas[0] = bas[4] = BG;
+        final float force = BG_HAUT == D_BG_HAUT && BG == D_BG ? 1f : 0.45f;   // thème d'origine : teintes exactes
+        for (int i = 0; i < 3; i++) {
+            haut[i + 1] = (int) ev0.evaluate(force, BG_HAUT, teintesHaut[i]);
+            bas[i + 1] = (int) ev0.evaluate(force, BG, teintesBas[i]);
+        }
         final ArgbEvaluator ev = new ArgbEvaluator();
         ValueAnimator va = ValueAnimator.ofFloat(0f, haut.length - 1);
         va.setDuration(24000);
