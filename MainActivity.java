@@ -64,6 +64,7 @@ public class MainActivity extends Activity {
         tuile("📻", "Radio", "Radios par pays et par ville", Ui.ACCENT, 0xFFFF3D6E, RadioActivity.class);
         tuile("📺", "Télévision", "Chaînes du monde, en plein écran", Ui.VIOLET, 0xFF3A7BFF, TvActivity.class);
         tuile("📡", "TV Kouamé", "Programme du jour, nouveau chaque jour à 00h00", 0xFFE91E63, 0xFFFF9800, TvKouameActivity.class);
+        tuile("🎮", "JEUX", "Panda Dash, Super Kouamé et Serpent", 0xFF8E24AA, 0xFFFF5252, JeuxActivity.class);
         tuile("📘", "Télécharger Facebook", "Une vidéo Facebook, en qualité standard ou HD", 0xFF1877F2, 0xFF5B3DF5, FacebookActivity.class);
         tuile("🎞", "Films partagés", "Les films ajoutés par les utilisateurs", 0xFF0E5FCB, 0xFF12B5CB, FilmsFacebookActivity.class);
         tuile("📥", "Téléchargements", "Facebook, galerie et liens, classés à part", 0xFF2E9E73, 0xFF9BCB3C, HorsLigneActivity.class);
