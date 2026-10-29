@@ -216,8 +216,19 @@ public class TvKouameActivity extends Activity {
                     FbLien.oublier(progs.get(courant).lien);
                     relancer(true);
                 } else {
-                    voile("⚠ Ce programme ne peut pas être lu. Le suivant démarre à l'heure prévue.");
+                    voile("⚠ Ce programme ne peut pas être lu (" + e.getErrorCodeName() + "). Le suivant démarre à l'heure prévue.");
                 }
+            }
+
+            @Override
+            public void onRenderedFirstFrame() {
+                voile(null);                    // l'image est là : on retire le message
+            }
+
+            @Override
+            public void onPlaybackStateChanged(int etat) {
+                if (etat == Player.STATE_BUFFERING) voile("⏳ Chargement de la vidéo…");
+                else if (etat == Player.STATE_READY) voile(null);
             }
         });
     }
@@ -405,7 +416,18 @@ public class TvKouameActivity extends Activity {
         player.setMediaSource(src, off < 3000 ? 0 : off);
         player.prepare();
         player.play();
-        voile(null);
+        voile("⏳ Chargement de la vidéo…");
+        final int g2 = gen;
+        vue.postDelayed(() -> {             // si rien ne démarre en 30 s : nouvelle tentative, puis message clair
+            if (g2 != generation || !actif || player == null || courant < 0 || courant >= progs.size()) return;
+            if (player.getPlaybackState() == Player.STATE_READY) return;
+            if (essaisProg == 0) {
+                FbLien.oublier(progs.get(courant).lien);
+                relancer(true);
+            } else {
+                voile("⚠ La vidéo ne démarre pas. Vérifiez votre connexion internet.");
+            }
+        }, 30000);
     }
 
     // ------------------------------------------------------------------ affichage
@@ -420,7 +442,7 @@ public class TvKouameActivity extends Activity {
     }
 
     private String titreDe(Prog g) {
-        String t = g.titre.isEmpty() ? "Vidéo" : g.titre;
+        String t = g.titre.isEmpty() ? "Vidéo" : LienPlateforme.titreCourt(g.titre, 5);
         if (!g.serie.isEmpty() || g.episode > 0) {
             t = (g.serie.isEmpty() ? "" : g.serie + " · ") + (g.episode > 0 ? "Épisode " + g.episode + " · " : "") + t;
         }
@@ -516,7 +538,7 @@ public class TvKouameActivity extends Activity {
             tick();
         } else {
             differe = true;
-            voile(null);
+            if (player.getPlaybackState() == Player.STATE_READY) voile(null);
             player.seekTo(0);
             player.play();
         }

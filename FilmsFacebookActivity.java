@@ -38,6 +38,7 @@ public class FilmsFacebookActivity extends Activity {
     private EditText champ;
     private int decalage = 0;
     private String recherche = "";
+    private String filtreCat = "";      // "", serie, film ou chanson
     private volatile boolean charge = false;
     private int generation = 0;
 
@@ -73,6 +74,19 @@ public class FilmsFacebookActivity extends Activity {
         rech.addView(champ, Ui.lp(this, 0, -2, 1f, 0, 0));
         rech.addView(ok, Ui.lp(this, -2, -2, 0f, 0, 8));
         Ui.ajouter(contenu, rech, 12);
+
+        // Catégories : tout / séries / films / chansons (chaque vidéo a une catégorie choisie au moment du collage du lien)
+        LinearLayout cats = new LinearLayout(this);
+        String[][] choix = {{"", "Tout"}, {"serie", "📺 Séries"}, {"film", "🎬 Films"}, {"chanson", "🎵 Chansons"}};
+        for (final String[] ch : choix) {
+            Button b = Ui.bouton(this, ch[1], Ui.VIOLET);
+            b.setOnClickListener(v -> {
+                filtreCat = ch[0];
+                chercher();
+            });
+            cats.addView(b, Ui.lp(this, 0, -2, 1f, 0, 4));
+        }
+        Ui.ajouter(contenu, cats, 10);
 
         statut = Ui.texte(this, "", 13, Ui.JAUNE, false);
         Ui.ajouter(contenu, statut, 10);
@@ -141,10 +155,11 @@ public class FilmsFacebookActivity extends Activity {
         final int g = generation;
         final int debut = decalage;
         final String rq = recherche;
+        final String cat = filtreCat;
         statut.setText("Chargement…");
         bPlus.setEnabled(false);
         new Thread(() -> {
-            final JSONArray films = Supabase.lister(debut, PAR_PAGE, rq);
+            final JSONArray films = Supabase.lister(debut, PAR_PAGE, rq, cat);
             runOnUiThread(() -> {
                 if (g != generation) return;
                 charge = false;
@@ -225,6 +240,14 @@ public class FilmsFacebookActivity extends Activity {
         if (!serie.isEmpty() || !ep.isEmpty()) {
             infos.addView(Ui.texte(this, (serie.isEmpty() ? "" : serie + " · ") + (ep.isEmpty() ? "" : "Épisode " + ep),
                     12, Ui.JAUNE, true), Ui.lp(this, -1, -2, 0f, 0, 0));
+        }
+        String cat = f.optString("categorie", "");
+        String pfm = f.optString("plateforme", "");
+        if ("null".equals(pfm)) pfm = "";
+        String etiquette = "serie".equals(cat) ? "📺 Série" : "film".equals(cat) ? "🎬 Film" : "chanson".equals(cat) ? "🎵 Chanson" : "";
+        if (!etiquette.isEmpty()) {
+            infos.addView(Ui.texte(this, etiquette + (pfm.isEmpty() ? "" : " · " + pfm), 12, Ui.ACCENT, true),
+                    Ui.lp(this, -1, -2, 0f, 0, 0));
         }
         TextView tt = Ui.texte(this, titre, 14, Ui.TXT, true);
         tt.setMaxLines(3);

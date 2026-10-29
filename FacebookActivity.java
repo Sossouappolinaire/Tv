@@ -263,6 +263,8 @@ public class FacebookActivity extends Activity {
     private VideoView apercu;
     private String dernierLien = "";
     private volatile boolean webEssaye = false;   // la lecture via la page Facebook a déjà été tentée
+    private String categorie = null;     // serie, film ou chanson (choix obligatoire)
+    private String plateforme = null;    // Facebook, YouTube ou TikTok
     private long premiereTrouvaille = 0;   // moment où la WebView a vu un 1er flux (thread principal)
 
     // =====================================================================
@@ -546,12 +548,49 @@ public class FacebookActivity extends Activity {
         }
         String l = premierLien(saisie);
         if (l == null) l = saisie.startsWith("http") ? saisie : "https://" + saisie;
-        String bas = l.toLowerCase(Locale.ROOT);
-        if (!(bas.contains("facebook.com") || bas.contains("fb.watch") || bas.contains("fb.com"))) {
-            toast("Ce n'est pas un lien Facebook");
+        final String pf = LienPlateforme.detecter(l);
+        if (pf == null) {
+            tvEtat.setText("❌ Lien non reconnu. Collez un lien Facebook, YouTube ou TikTok.");
+            toast("Lien non reconnu");
             return;
         }
-        final String lien = l;
+        if (!LienPlateforme.FACEBOOK.equals(pf)) {
+            viderResultats();
+            barreCacher();
+            tvEtat.setText("🔎 Lien " + pf + " reconnu. Le téléchargement n'est pas disponible pour " + pf
+                    + " dans cette version : seuls les liens Facebook peuvent être téléchargés.");
+            return;
+        }
+        tvEtat.setText("🔎 Lien " + pf + " reconnu.");
+        final String lienReconnu = l;
+        choisirCategorie(() -> lancerAnalyse(lienReconnu, pf));
+    }
+
+    /** Catégorie obligatoire : sans choix, impossible de continuer (le bouton reste grisé). */
+    private void choisirCategorie(final Runnable suite) {
+        final String[] noms = {"📺 Série", "🎬 Film", "🎵 Chanson"};
+        final String[] codes = {"serie", "film", "chanson"};
+        final int[] choix = {-1};
+        final AlertDialog d = new AlertDialog.Builder(this)
+                .setTitle("Cette vidéo est…")
+                .setSingleChoiceItems(noms, -1, (dlg, i) -> {
+                    choix[0] = i;
+                    ((AlertDialog) dlg).getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(true);
+                })
+                .setPositiveButton("Continuer", (dlg, w) -> {
+                    if (choix[0] < 0) return;
+                    categorie = codes[choix[0]];
+                    suite.run();
+                })
+                .setNegativeButton("Annuler", (dlg, w) -> tvEtat.setText("Analyse annulée : choisissez une catégorie pour continuer."))
+                .setCancelable(false)
+                .create();
+        d.show();
+        d.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+    }
+
+    private void lancerAnalyse(String lien, String pf) {
+        plateforme = pf;
         dernierLien = lien;
         webEssaye = false;
         final int g = ++generation;
@@ -902,6 +941,22 @@ public class FacebookActivity extends Activity {
         }
     }
 
+    /** Hauteur réelle de la vidéo (ex. 540) lue dans le lien Facebook ; 0 si Facebook ne l'indique pas. */
+    private int hauteurDe(String url) {
+        try {
+            Matcher m = HAUTEUR.matcher(etiquette(url));
+            if (m.find()) return Integer.parseInt(m.group(1));
+        } catch (Exception ignore) {
+            // pas d'indication
+        }
+        return 0;
+    }
+
+    private String libelleResolution(String url) {
+        int h = hauteurDe(url);
+        return h > 0 ? h + "p" : "résolution non indiquée";
+    }
+
     private void capturesVersRes(Res r) {
         int meilleureV = -1;
         for (String[] c : captures) {
@@ -957,6 +1012,8 @@ public class FacebookActivity extends Activity {
         viderResultats();
         final int g = generation;
         final String lienPartage = dernierLien;
+        final String catPartage = categorie;
+        final String pfPartage = plateforme;
         if (r.sd != null || r.hd != null) {
             tvEtat.setText("✅ Vidéo trouvée. Regardez l'aperçu, puis choisissez le format :");
             ajouterVignette(r);
@@ -965,25 +1022,29 @@ public class FacebookActivity extends Activity {
             final Plan phd = r.hd != null ? new Plan("hd", r.hd, null, r.uaHd) : null;
             if (psd != null) psd.dureeMs = r.dureeMs;
             if (phd != null) phd.dureeMs = r.dureeMs;
+            final String resSd = psd != null ? libelleResolution(psd.url) : "";
+            final String resHd = phd != null ? libelleResolution(phd.url) : "";
+            final String baseSd = resSd + " · fichier plus léger";
+            final String baseHd = resHd + " · meilleure image, fichier plus lourd";
             final TextView tSd = carte("Standard (SD)",
-                    psd != null ? infoCarte("Environ 360p · fichier plus léger", psd, 900000) : "Non disponible pour cette vidéo",
+                    psd != null ? infoCarte(baseSd, psd, 900000) : "Non disponible pour cette vidéo",
                     psd != null, C_ACCENT,
-                    v -> confirmer("SD (qualité standard, environ 360p)", psd));
+                    v -> confirmer("SD (qualité standard, " + resSd + ")", psd));
             final TextView tHd = carte("Haute qualité (HD)",
-                    phd != null ? infoCarte("Meilleure image · fichier plus lourd", phd, 2500000) : "Non disponible pour cette vidéo",
+                    phd != null ? infoCarte(baseHd, phd, 2500000) : "Non disponible pour cette vidéo",
                     phd != null, C_VIOLET,
-                    v -> confirmer("HD (haute qualité)", phd));
+                    v -> confirmer("HD (haute qualité, " + resHd + ")", phd));
             // Taille réelle : on la demande au serveur en arrière-plan, puis on met les cartes à jour.
             new Thread(() -> {
                 if (psd != null) psd.tailleV = sonderTaille(psd.url, psd.ua);
                 if (phd != null) phd.tailleV = sonderTaille(phd.url, phd.ua);
                 // Partage dans la base « Films partagés » : image, durée, formats et tailles (même sans téléchargement)
                 Supabase.partager(lienPartage, r.titre, r.image, r.mini, r.dureeMs,
-                        psd != null ? psd.tailleV : -1, phd != null ? phd.tailleV : -1, UA_PC);
+                        psd != null ? psd.tailleV : -1, phd != null ? phd.tailleV : -1, UA_PC, catPartage, pfPartage);
                 h.post(() -> {
                     if (g != generation) return;
-                    if (psd != null) tSd.setText(infoCarte("Environ 360p · fichier plus léger", psd, 900000));
-                    if (phd != null) tHd.setText(infoCarte("Meilleure image · fichier plus lourd", phd, 2500000));
+                    if (psd != null) tSd.setText(infoCarte(baseSd, psd, 900000));
+                    if (phd != null) tHd.setText(infoCarte(baseHd, phd, 2500000));
                 });
             }).start();
         } else if (r.dashV != null) {
@@ -1010,7 +1071,7 @@ public class FacebookActivity extends Activity {
             new Thread(() -> {
                 pd.tailleV = sonderTaille(pd.url, pd.ua);
                 if (pd.audio != null) pd.tailleA = sonderTaille(pd.audio, pd.ua);
-                Supabase.partager(lienPartage, r.titre, r.image, r.mini, r.dureeMs, -1, pd.tailleTotale(), UA_PC);
+                Supabase.partager(lienPartage, r.titre, r.image, r.mini, r.dureeMs, -1, pd.tailleTotale(), UA_PC, catPartage, pfPartage);
                 h.post(() -> {
                     if (g != generation) return;
                     tD.setText(infoCarte(base, pd, 2500000));

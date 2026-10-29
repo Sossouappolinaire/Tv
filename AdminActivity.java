@@ -94,6 +94,9 @@ public class AdminActivity extends Activity {
         Button genTv = Ui.bouton(this, "🔄 Refaire le programme d'aujourd'hui", Ui.VERT);
         genTv.setOnClickListener(v -> genererTv());
         Ui.ajouter(c, genTv, 8);
+        Button gererTv = Ui.bouton(this, "📋 Programme et vidéos de la TV", Ui.ACCENT);
+        gererTv.setOnClickListener(v -> startActivity(new Intent(this, AdminTvActivity.class)));
+        Ui.ajouter(c, gererTv, 8);
         Button videTv = Ui.boutonContour(this, "🗑 Remettre TV Kouamé à zéro", Ui.TXT);
         videTv.setOnClickListener(v -> viderTv());
         Ui.ajouter(c, videTv, 8);

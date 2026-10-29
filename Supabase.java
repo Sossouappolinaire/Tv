@@ -184,11 +184,20 @@ final class Supabase {
 
     /** Idem, avec une miniature déjà préparée (base64) : évite de retélécharger l'image. */
     static void partager(String lien, String titre, String urlImage, String miniPrete, long dureeMs, long tailleSd, long tailleHd, String ua) {
+        partager(lien, titre, urlImage, miniPrete, dureeMs, tailleSd, tailleHd, ua, null, null);
+    }
+
+    /** Idem, avec la catégorie (serie, film ou chanson) et la plateforme (Facebook, YouTube, TikTok). Le titre est limité à 5 mots. */
+    static void partager(String lien, String titre, String urlImage, String miniPrete, long dureeMs, long tailleSd, long tailleHd, String ua,
+                         String categorie, String plateforme) {
         if (!configure() || lien == null || lien.isEmpty()) return;
+        titre = LienPlateforme.titreCourt(titre, 5);
         HttpURLConnection c = null;
         try {
             JSONObject o = new JSONObject();
             o.put("lien", nettoyerLien(lien));
+            if (categorie != null && !categorie.isEmpty()) o.put("categorie", categorie);
+            if (plateforme != null && !plateforme.isEmpty()) o.put("plateforme", plateforme);
             if (titre != null && !titre.isEmpty()) o.put("titre", titre.length() > 300 ? titre.substring(0, 300) : titre);
             String mini = miniPrete != null ? miniPrete : miniature(urlImage, ua);
             if (mini != null) o.put("miniature", mini);
@@ -238,6 +247,11 @@ final class Supabase {
 
     /** Renvoie les films (plus récents d'abord), ou null en cas d'erreur (voir derniereErreur). */
     static JSONArray lister(int decalage, int nombre, String recherche) {
+        return lister(decalage, nombre, recherche, null);
+    }
+
+    /** Idem, filtré par catégorie (serie, film ou chanson) ; null ou vide = toutes. */
+    static JSONArray lister(int decalage, int nombre, String recherche, String categorie) {
         if (!configure()) {
             derniereErreur = "CLE_MANQUANTE";
             return null;
@@ -246,6 +260,7 @@ final class Supabase {
         try {
             StringBuilder q = new StringBuilder("films_facebook?select=*&order=serie.asc.nullslast,episode.asc.nullslast,cree_le.desc&limit=" + nombre
                     + "&offset=" + decalage);
+            if (categorie != null && categorie.matches("serie|film|chanson")) q.append("&categorie=eq.").append(categorie);
             if (recherche != null && !recherche.trim().isEmpty()) {
                 q.append("&titre=ilike.*").append(java.net.URLEncoder.encode(recherche.trim().replace("*", ""), "UTF-8")).append('*');
             }
@@ -420,6 +435,53 @@ final class Supabase {
             return r == null ? null : new JSONObject(r);
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /** Admin : programme du jour de TV Kouamé (objet avec « programmes »), ou null. */
+    static JSONObject adminTvProgramme() {
+        try {
+            String r = rest("POST", "rpc/admin_tv_programme", "{}", null);
+            return r == null ? null : new JSONObject(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Admin : vidéos filtrées par catégorie (null = toutes) ; exclus = seulement celles retirées de la TV. */
+    static JSONArray adminTvVideos(String categorie, boolean exclus) {
+        try {
+            JSONObject o = new JSONObject().put("p_exclus", exclus);
+            if (categorie != null && !categorie.isEmpty()) o.put("p_cat", categorie);
+            String r = rest("POST", "rpc/admin_tv_videos", o.toString(), null);
+            return r == null ? null : new JSONArray(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Admin : change la catégorie d'une vidéo (serie, film, chanson). Pour une série : nom et numéro d'épisode. Renvoie "" si c'est fait, sinon un code d'erreur. */
+    static String adminVideoModifier(String id, String categorie, String serie, int episode) {
+        try {
+            JSONObject o = new JSONObject().put("p_id", id).put("p_categorie", categorie);
+            if (serie != null && !serie.isEmpty()) o.put("p_serie", serie);
+            if (episode > 0) o.put("p_episode", episode);
+            String r = rest("POST", "rpc/admin_video_modifier", o.toString(), null);
+            if (r == null) return "reseau";
+            JSONObject j = new JSONObject(r);
+            return j.optBoolean("ok") ? "" : j.optString("erreur", "refuse");
+        } catch (Exception e) {
+            return "reseau";
+        }
+    }
+
+    /** Admin : retire une vidéo de la TV (illisible) ou la remet. */
+    static boolean adminTvExclure(String id, boolean exclu) {
+        try {
+            String r = rest("POST", "rpc/admin_tv_exclure", new JSONObject().put("p_id", id).put("p_exclu", exclu).toString(), null);
+            return r != null && new JSONObject(r).optBoolean("ok");
+        } catch (Exception e) {
+            return false;
         }
     }
 
