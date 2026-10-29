@@ -79,12 +79,12 @@ public class FilmsFacebookActivity extends Activity {
         LinearLayout cats = new LinearLayout(this);
         String[][] choix = {{"", "Tout"}, {"serie", "📺 Séries"}, {"film", "🎬 Films"}, {"chanson", "🎵 Chansons"}};
         for (final String[] ch : choix) {
-            Button b = Ui.bouton(this, ch[1], Ui.VIOLET);
-            b.setOnClickListener(v -> {
+            Button bCat = Ui.bouton(this, ch[1], Ui.VIOLET);
+            bCat.setOnClickListener(v -> {
                 filtreCat = ch[0];
                 chercher();
             });
-            cats.addView(b, Ui.lp(this, 0, -2, 1f, 0, 4));
+            cats.addView(bCat, Ui.lp(this, 0, -2, 1f, 0, 4));
         }
         Ui.ajouter(contenu, cats, 10);
 
