@@ -475,6 +475,19 @@ final class Supabase {
         }
     }
 
+    /** Admin : change le titre d'une vidéo. Renvoie "" si c'est fait, sinon un code d'erreur. */
+    static String adminVideoTitre(String id, String titre) {
+        try {
+            JSONObject o = new JSONObject().put("p_id", id).put("p_titre", titre);
+            String r = rest("POST", "rpc/admin_video_titre", o.toString(), null);
+            if (r == null) return "reseau";
+            JSONObject j = new JSONObject(r);
+            return j.optBoolean("ok") ? "" : j.optString("erreur", "refuse");
+        } catch (Exception e) {
+            return "reseau";
+        }
+    }
+
     /** Admin : retire une vidéo de la TV (illisible) ou la remet. */
     static boolean adminTvExclure(String id, boolean exclu) {
         try {
