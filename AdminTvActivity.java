@@ -18,7 +18,7 @@ import java.util.Locale;
 
 /**
  * Administrateur : programme du jour de TV Kouamé, liste des vidéos par catégorie,
- * changement de catégorie (série + numéro d'épisode), retrait d'une vidéo illisible.
+ * changement de catégorie (série + numéro d'épisode) et du titre, retrait d'une vidéo.
  * Les droits sont vérifiés par la base (est_admin) : cet écran seul ne donne aucun pouvoir.
  */
 public class AdminTvActivity extends Activity {
@@ -44,7 +44,7 @@ public class AdminTvActivity extends Activity {
         c.setPadding(p, p, p, p);
 
         Ui.ajouter(c, Ui.texte(this, "📺 Programme TV Kouamé", 22, Ui.TXT, true), 0);
-        Ui.ajouter(c, Ui.texte(this, "Touchez une vidéo pour changer sa catégorie ou la retirer de la TV (vidéo illisible : elle ne sera plus jamais programmée). "
+        Ui.ajouter(c, Ui.texte(this, "Touchez une vidéo pour changer sa catégorie ou la retirer de la TV (elle ne sera plus jamais programmée). "
                 + "Après une modification, appuyez sur « Refaire le programme » pour l'appliquer à aujourd'hui.", 13, Ui.TXT2, false), 6);
 
         Button refaire = Ui.bouton(this, "🔄 Refaire le programme d'aujourd'hui", Ui.VERT);
@@ -155,7 +155,7 @@ public class AdminTvActivity extends Activity {
         final String id = o.optString("id", "");
         final boolean exclu = o.optBoolean("exclu");
         String[] choix = {"✏ Changer la catégorie / l'épisode",
-                exclu ? "✅ Remettre dans la TV" : "⛔ Retirer de la TV (illisible)"};
+                exclu ? "✅ Remettre dans la TV" : "⛔ Retirer de la TV"};
         new AlertDialog.Builder(this)
                 .setTitle(titreDe(o))
                 .setItems(choix, (d, i) -> {
@@ -173,7 +173,7 @@ public class AdminTvActivity extends Activity {
                 .setTitle("Cette vidéo est…")
                 .setItems(noms, (d, i) -> {
                     if (i == 0) saisirSerie(o);
-                    else modifier(id, i == 1 ? "film" : "chanson", "", 0);
+                    else saisirTitre(o, i == 1 ? "film" : "chanson", "", 0);
                 })
                 .setNegativeButton("Annuler", null)
                 .show();
@@ -209,19 +209,45 @@ public class AdminTvActivity extends Activity {
                         statut.setText("⚠ Indiquez le nom de la série et le numéro de l'épisode (1 ou plus).");
                         return;
                     }
-                    modifier(id, "serie", n, numero);
+                    saisirTitre(o, "serie", n, numero);
                 })
                 .setNegativeButton("Annuler", null)
                 .show();
     }
 
-    private void modifier(final String id, final String cat, final String serie, final int episode) {
+    /** Après le choix de la catégorie : on peut donner (ou corriger) le titre. « Passer » garde le titre actuel. */
+    private void saisirTitre(final JSONObject o, final String cat, final String serie, final int episode) {
+        final String id = o.optString("id", "");
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        l.setBackground(Ui.rond(Ui.CARD, 0, this));
+        int p = Ui.dp(this, 16);
+        l.setPadding(p, p, p, p);
+        final EditText titre = Ui.champ(this, "Titre de la vidéo");
+        titre.setText(texte(o, "titre"));
+        titre.setSelection(titre.getText().length());
+        Ui.ajouter(l, titre, 0);
+        new AlertDialog.Builder(this)
+                .setTitle("Titre (facultatif)")
+                .setView(l)
+                .setPositiveButton("Enregistrer", (d, w) -> modifier(id, cat, serie, episode, titre.getText().toString().trim()))
+                .setNeutralButton("Passer", (d, w) -> modifier(id, cat, serie, episode, ""))
+                .setNegativeButton("Annuler", null)
+                .show();
+    }
+
+    private void modifier(final String id, final String cat, final String serie, final int episode, final String titre) {
         statut.setText("Enregistrement…");
         new Thread(() -> {
-            final String err = Supabase.adminVideoModifier(id, cat, serie, episode);
+            String e = Supabase.adminVideoModifier(id, cat, serie, episode);
+            if (e.isEmpty() && titre != null && !titre.isEmpty()) {
+                String et = Supabase.adminVideoTitre(id, titre);
+                if (!et.isEmpty()) e = "titre : " + et;
+            }
+            final String err = e;
             runOnUiThread(() -> {
                 if (err.isEmpty()) {
-                    statut.setText("✅ Catégorie enregistrée. Appuyez sur « Refaire le programme » pour l'appliquer à aujourd'hui.");
+                    statut.setText("✅ Enregistré. Appuyez sur « Refaire le programme » pour l'appliquer à aujourd'hui.");
                     charger();
                 } else if ("serie_requise".equals(err)) {
                     statut.setText("⚠ Le nom de la série est obligatoire.");
