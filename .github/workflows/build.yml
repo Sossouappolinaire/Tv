@@ -11,6 +11,7 @@ jobs:
           mv ./*.java app/src/main/java/bj/radio/
           mv AndroidManifest.xml app/src/main/AndroidManifest.xml
           mv app.gradle app/build.gradle
+          mv sossokouame.keystore app/sossokouame.keystore
           if [ -f ic_launcher.png ]; then
             mkdir -p app/src/main/res/mipmap-xxxhdpi app/src/main/res/mipmap-anydpi-v26 app/src/main/res/drawable-xxxhdpi app/src/main/res/values
             mv ic_launcher.png app/src/main/res/mipmap-xxxhdpi/ic_launcher.png
@@ -25,9 +26,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleDebug --stacktrace
+      - run: gradle assembleRelease --stacktrace
       - uses: actions/upload-artifact@v4
         with:
           name: apk
-          path: 'app/build/outputs/apk/debug/*.apk'
+          path: 'app/build/outputs/apk/release/*.apk'
           if-no-files-found: error
