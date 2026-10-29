@@ -488,6 +488,82 @@ final class Supabase {
         }
     }
 
+    /** Tout compte connecté : dernière configuration (JSON) publiée dans la base, ou null. */
+    static JSONObject configDerniere() {
+        try {
+            String r = rest("POST", "rpc/config_derniere", "{}", null);
+            return r == null ? null : new JSONObject(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Admin : publie une nouvelle configuration pour tous les utilisateurs. Renvoie "" si c'est fait, sinon un code d'erreur. */
+    static String adminConfigPublier(JSONObject contenu, String note) {
+        try {
+            JSONObject o = new JSONObject().put("p_contenu", contenu);
+            if (note != null && !note.isEmpty()) o.put("p_note", note);
+            String r = rest("POST", "rpc/admin_config_publier", o.toString(), null);
+            if (r == null) return derniereErreur.isEmpty() ? "reseau" : derniereErreur;
+            JSONObject j = new JSONObject(r);
+            return j.optBoolean("ok") ? "" : j.optString("erreur", "refuse");
+        } catch (Exception e) {
+            return "reseau";
+        }
+    }
+
+    /** Informations d'un zip de contenu (taille, dates en ms) ou null. */
+    static JSONObject paquetInfo(String nom) {
+        try {
+            String r = rest("POST", "rpc/paquet_info", new JSONObject().put("p_nom", nom).toString(), null);
+            return r == null ? null : new JSONObject(r);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private static HttpURLConnection stockage(String methode, String nom) throws Exception {
+        String chemin = java.net.URLEncoder.encode(nom, "UTF-8").replace("+", "%20");
+        String base = "POST".equals(methode) ? "/storage/v1/object/contenu-app/" : "/storage/v1/object/authenticated/contenu-app/";
+        HttpURLConnection c = (HttpURLConnection) new URL(URL_PROJET + base + chemin).openConnection();
+        c.setRequestMethod(methode);
+        c.setRequestProperty("apikey", CLE);
+        String jeton = Compte.jeton();
+        if (jeton != null) c.setRequestProperty("Authorization", "Bearer " + jeton);
+        c.setConnectTimeout(15000);
+        c.setReadTimeout(60000);
+        return c;
+    }
+
+    /** Ouvre le téléchargement d'un zip de contenu (compte connecté). À appeler hors du thread principal. */
+    static HttpURLConnection ouvrirPaquet(String nom) throws Exception {
+        return stockage("GET", nom);
+    }
+
+    /** Admin : envoie (ou remplace) un zip de contenu. Renvoie "" si c'est fait, sinon un code d'erreur. */
+    static String envoyerPaquet(String nom, InputStream in, long taille) {
+        HttpURLConnection c = null;
+        try {
+            c = stockage("POST", nom);
+            c.setRequestProperty("Content-Type", "application/zip");
+            c.setRequestProperty("x-upsert", "true");
+            c.setDoOutput(true);
+            if (taille > 0) c.setFixedLengthStreamingMode(taille);
+            else c.setChunkedStreamingMode(65536);
+            java.io.OutputStream out = c.getOutputStream();
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.close();
+            int code = c.getResponseCode();
+            return code < 300 ? "" : "http " + code;
+        } catch (Exception e) {
+            return "reseau";
+        } finally {
+            if (c != null) c.disconnect();
+        }
+    }
+
     /** Admin : retire une vidéo de la TV (illisible) ou la remet. */
     static boolean adminTvExclure(String id, boolean exclu) {
         try {

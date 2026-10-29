@@ -22,6 +22,7 @@ import org.json.JSONObject;
 public class AdminActivity extends Activity {
 
     private TextView chiffres, statut, comptesTxt;
+    private TextView majTxt;
     private EditText lien, titre, serie, episode, cibleEmail, nouveauPasse, canalTv;
     private JSONArray liste = new JSONArray();
 
@@ -49,6 +50,12 @@ public class AdminActivity extends Activity {
         Button actu = Ui.bouton(this, "🔄 Actualiser", Ui.VIOLET);
         actu.setOnClickListener(v -> charger());
         Ui.ajouter(c, actu, 8);
+
+        Button maj = Ui.bouton(this, "⬆ Mise à jour", Ui.VERT);
+        maj.setOnClickListener(v -> startActivity(new Intent(this, MajActivity.class)));
+        Ui.ajouter(c, maj, 8);
+        majTxt = Ui.texte(this, "", 13, Ui.TXT2, false);
+        Ui.ajouter(c, majTxt, 6);
 
         Button sortir = Ui.boutonContour(this, "Se déconnecter", Ui.TXT);
         sortir.setOnClickListener(v -> new AlertDialog.Builder(this)
@@ -119,6 +126,17 @@ public class AdminActivity extends Activity {
         page.addView(sv, new LinearLayout.LayoutParams(-1, 0, 1f));
         setContentView(page);
         charger();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (majTxt != null) {
+            String d = Config.info(this);
+            String z = Paquets.info(this);
+            majTxt.setText((d == null ? "Dernière mise à jour : aucune pour l'instant."
+                    : "✅ Dernière mise à jour :\n   " + d) + (z == null ? "" : "\n" + z));
+        }
     }
 
     private void charger() {

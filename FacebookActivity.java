@@ -264,6 +264,7 @@ public class FacebookActivity extends Activity {
     private String dernierLien = "";
     private volatile boolean webEssaye = false;   // la lecture via la page Facebook a déjà été tentée
     private String categorie = null;     // serie, film ou chanson (choix obligatoire)
+    private String titreSaisi = "";      // titre écrit par la personne après le choix de la catégorie (vide = titre automatique)
     private String plateforme = null;    // Facebook, YouTube ou TikTok
     private long premiereTrouvaille = 0;   // moment où la WebView a vu un 1er flux (thread principal)
 
@@ -580,13 +581,39 @@ public class FacebookActivity extends Activity {
                 .setPositiveButton("Continuer", (dlg, w) -> {
                     if (choix[0] < 0) return;
                     categorie = codes[choix[0]];
-                    suite.run();
+                    saisirTitre(suite);
                 })
                 .setNegativeButton("Annuler", (dlg, w) -> tvEtat.setText("Analyse annulée : choisissez une catégorie pour continuer."))
                 .setCancelable(false)
                 .create();
         d.show();
         d.getButton(AlertDialog.BUTTON_POSITIVE).setEnabled(false);
+    }
+
+    /** Après la catégorie : la personne écrit le titre (5 mots au plus sont gardés). « Passer » = titre trouvé automatiquement. */
+    private void saisirTitre(final Runnable suite) {
+        final EditText champ = new EditText(this);
+        champ.setHint("Écrivez le titre de la vidéo");
+        champ.setSingleLine(true);
+        champ.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_SENTENCES);
+        LinearLayout boite = new LinearLayout(this);
+        boite.setOrientation(LinearLayout.VERTICAL);
+        boite.setPadding(dp(20), dp(8), dp(20), 0);
+        boite.addView(champ);
+        new AlertDialog.Builder(this)
+                .setTitle("Titre de la vidéo")
+                .setView(boite)
+                .setPositiveButton("Continuer", (dlg, w) -> {
+                    titreSaisi = champ.getText().toString().trim();
+                    suite.run();
+                })
+                .setNeutralButton("Passer", (dlg, w) -> {
+                    titreSaisi = "";
+                    suite.run();
+                })
+                .setNegativeButton("Annuler", (dlg, w) -> tvEtat.setText("Analyse annulée."))
+                .setCancelable(false)
+                .show();
     }
 
     private void lancerAnalyse(String lien, String pf) {
@@ -755,7 +782,7 @@ public class FacebookActivity extends Activity {
         if (t.length() < 3) return null;
         String m = t.toLowerCase(Locale.ROOT);
         String[] generiques = { "facebook", "log in", "login", "log into", "sign up", "se connecter", "connexion", "inscrivez",
-                "vous devez vous connecter", "you must log in", "isn't available", "n'est pas disponible", "watch" };
+                "vous devez vous connecter", "you must log in", "isn't available", "n'est pas disponible", "watch", "error", "erreur" };
         for (String g : generiques) {
             if (m.equals(g) || (g.length() > 6 && m.contains(g))) return null;
         }
@@ -1008,6 +1035,7 @@ public class FacebookActivity extends Activity {
     // =====================================================================
 
     private void afficher(final Res r) {
+        if (titreSaisi != null && !titreSaisi.isEmpty()) r.titre = titreSaisi;
         nettoyerWeb();
         viderResultats();
         final int g = generation;

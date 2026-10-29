@@ -141,6 +141,15 @@
             android:exported="false" />
 
         <activity
+            android:name=".MajActivity"
+            android:exported="false"
+            android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".PageWebActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".FilmsFacebookActivity"
             android:exported="false" />
 
