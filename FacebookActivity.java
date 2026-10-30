@@ -323,7 +323,33 @@ public class FacebookActivity extends Activity {
         super.onBackPressed();
     }
 
+    /**
+     * Venant de « Films partagés › Télécharger » : le format (SD ou HD) est déjà choisi et sa taille déjà mesurée.
+     * On passe directement à la confirmation, sans refaire l'analyse du lien.
+     */
+    private void telechargementDirect(Intent i) {
+        String url = i.getStringExtra("dl_url");
+        i.removeExtra("dl_url");               // pour ne pas relancer à chaque retour sur l'écran
+        if (url == null || url.isEmpty()) return;
+        String nom = i.getStringExtra("dl_nom");
+        Plan p = new Plan(nom == null ? "sd" : nom, url, i.getStringExtra("dl_audio"), i.getStringExtra("dl_ua"));
+        p.dureeMs = i.getLongExtra("dl_duree", 0);
+        p.tailleV = i.getLongExtra("dl_taille_v", -1);
+        p.tailleA = i.getLongExtra("dl_taille_a", -1);
+        String lien = i.getStringExtra("dl_lien");
+        if (lien != null && !lien.isEmpty()) {
+            dernierLien = lien;
+            etLien.setText(lien);
+        }
+        String res = i.getStringExtra("dl_res");
+        confirmer(("sd".equals(p.nom) ? "SD" : "HD") + (res == null ? "" : " (" + res + ")"), p);
+    }
+
     private void traiterIntent(Intent i) {
+        if (i != null && i.hasExtra("dl_url")) {
+            telechargementDirect(i);
+            return;
+        }
         if (i == null || !Intent.ACTION_SEND.equals(i.getAction())) return;
         String u = premierLien(i.getStringExtra(Intent.EXTRA_TEXT));
         if (u != null) {
@@ -367,7 +393,7 @@ public class FacebookActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView intro = texte("Collez le lien d'une vidéo publique, ou partagez-la depuis Facebook "
-                + "vers Sossokouamé. Téléchargez seulement vos propres vidéos ou celles dont "
+                + "vers Kouamé Play Box. Téléchargez seulement vos propres vidéos ou celles dont "
                 + "l'auteur est d'accord, et respectez les conditions de Facebook.\n\n"
                 + "ℹ Chaque lien analysé (téléchargé ou non) est ajouté, avec son image, sa durée et sa taille, "
                 + "à « Films partagés » : les autres utilisateurs de l'application le voient et peuvent le télécharger.", 13, false);
@@ -1118,6 +1144,11 @@ public class FacebookActivity extends Activity {
         long t = p.tailleTotale();
         if (t > 0) {
             sb.append("\n💾 Taille : ").append(formatTaille(t));
+            if ("sd".equals(p.nom) && p.audio == null && FbLien.tropLourd(t, p.dureeMs, hauteurDe(p.url))) {
+                double mbps = t * 8.0 / (p.dureeMs / 1000.0) / 1e6;
+                sb.append(String.format(Locale.FRANCE, "\n⚠ Plus lourd qu'un vrai %s (%.1f Mbit/s) : Facebook sert ici une qualité supérieure.",
+                        libelleResolution(p.url), mbps));
+            }
         } else {
             long est = estimer(p.dureeMs, debitEstime);
             sb.append("\n💾 Taille : calcul en cours…");
@@ -1352,6 +1383,7 @@ public class FacebookActivity extends Activity {
             final boolean complet = alerte.isEmpty();
             final String lienCompte = dernierLien;
             new Thread(() -> Supabase.compterTelechargement(lienCompte)).start();
+            if (complet) Telecharges.enregistrer(getApplicationContext(), lienCompte, finale);   // mémoire locale : « Lire » au lieu de « Télécharger »
             h.post(() -> barreFin(true, complet ? "✅ Téléchargement terminé" : "⚠ Téléchargement terminé (incomplet)", finInfo));
         } catch (Exception e) {
             part.delete();

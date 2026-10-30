@@ -32,7 +32,7 @@ import org.json.JSONObject;
 
 import java.util.List;
 
-/** Petits outils de style partagés : thème gris cendre « Sossokouamé » (dégradés, boutons, animations). */
+/** Petits outils de style partagés : thème gris cendre « Kouamé Play Box » (dégradés, boutons, animations). */
 public class Ui {
     // Couleurs du thème : valeurs d'origine ci-dessous, modifiables à distance par la clé "theme" du fichier de configuration
     // (voir Ui.theme). Elles ne sont plus « final » pour pouvoir changer sans recompiler.

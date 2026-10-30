@@ -23,6 +23,14 @@ public class App extends Application {
         }
     };
 
+    /** Motard Combat : toutes les 8 s (appli visible), on regarde si quelqu'un m'invite à jouer. */
+    private final Runnable invitations = new Runnable() {
+        @Override public void run() {
+            if (Compte.connecte()) new Thread(() -> MotardReseau.verifierInvitations(getApplicationContext())).start();
+            pouls.postDelayed(this, 8_000);
+        }
+    };
+
     private int demarrees = 0;
     private long heureFond = 0;
 
@@ -47,6 +55,8 @@ public class App extends Application {
                 if (demarrees == 0) {
                     pouls.removeCallbacks(battement);
                     pouls.post(battement);   // « en ligne » : un signal par minute tant que l'app est visible
+                    pouls.removeCallbacks(invitations);
+                    pouls.postDelayed(invitations, 3_000);
                 }
                 demarrees++;
                 if (Securite.verrouille && Compte.connecte() && Securite.pinActif()
@@ -61,6 +71,7 @@ public class App extends Application {
                 if (demarrees == 0) {
                     heureFond = System.currentTimeMillis();
                     pouls.removeCallbacks(battement);
+                    pouls.removeCallbacks(invitations);
                 }
             }
 

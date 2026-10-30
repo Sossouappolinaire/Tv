@@ -416,7 +416,7 @@ public class CompilateurActivity extends Activity {
             String arbreSha = api("POST", "/repos/" + repo + "/git/trees", ct).getString("sha");
 
             JSONObject cc = new JSONObject();
-            cc.put("message", "Projet envoyé depuis Sossokouamé : " + nomZip);
+            cc.put("message", "Projet envoyé depuis Kouamé Play Box : " + nomZip);
             cc.put("tree", arbreSha);
             cc.put("parents", new JSONArray());
             String commit = api("POST", "/repos/" + repo + "/git/commits", cc).getString("sha");

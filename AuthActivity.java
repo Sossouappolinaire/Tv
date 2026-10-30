@@ -1,11 +1,14 @@
 package bj.radio;
 
-import android.animation.Animator;
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.ActivityNotFoundException;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
 import android.text.InputType;
 import android.text.method.HideReturnsTransformationMethod;
@@ -20,9 +23,7 @@ import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
-
-import java.util.ArrayList;
-import java.util.List;
+import android.widget.Toast;
 
 /**
  * Entrée de l'application : inscription (nom, email, mot de passe), confirmation, connexion et mot de passe oublié.
@@ -32,6 +33,14 @@ import java.util.List;
 public class AuthActivity extends Activity {
 
     private static final int CONNEXION = 0, INSCRIPTION = 1, OUBLI = 2, CONFIRMATION = 3;
+    private static final int AUTH_BG_HAUT = 0xFF0B1020;
+    private static final int AUTH_BG_BAS = 0xFF111B31;
+    private static final int AUTH_CARTE = 0xFF172239;
+    private static final int AUTH_CHAMP = 0xFF10192B;
+    private static final int AUTH_TEXTE = 0xFFF5F7FF;
+    private static final int AUTH_DISCRET = 0xFFADB9D0;
+    private static final int AUTH_ORANGE = 0xFFFF9052;
+    private static final int AUTH_AMBRE = 0xFFFFC857;
 
     private int mode = CONNEXION;
     private boolean etapeCode = false;        // « mot de passe oublié » : 2e étape (code reçu, nouveau mot de passe)
@@ -44,50 +53,66 @@ public class AuthActivity extends Activity {
     private Button oeil;
     private TextView intro, message;
     private boolean passeVisible = false;
-    private final List<Animator> animations = new ArrayList<>();
+    private AlertDialog dialogCode;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         Ui.fenetre(this);
+        getWindow().setStatusBarColor(AUTH_BG_HAUT);
+        getWindow().setNavigationBarColor(AUTH_BG_HAUT);
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
 
-        int p = Ui.dp(this, 18);
+        int p = Ui.dp(this, 22);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setGravity(Gravity.CENTER_HORIZONTAL);
-        root.setPadding(p, p * 2, p, p);
+        root.setPadding(p, Ui.dp(this, 24), p, p);
+        root.setBackground(new GradientDrawable(GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{AUTH_BG_HAUT, AUTH_BG_BAS}));
 
-        TextView logo = Ui.texte(this, "📞", 54, Ui.TXT, false);
+        TextView logo = Ui.texte(this, "▶", 25, AUTH_TEXTE, true);
         logo.setGravity(Gravity.CENTER);
-        root.addView(logo);
-        animations.add(Ui.flotter(logo, 0));
+        logo.setBackground(Ui.degrade(AUTH_ORANGE, AUTH_AMBRE, 24, this));
+        logo.setElevation(Ui.dp(this, 8));
+        logo.setContentDescription("Logo de l’application");
+        root.addView(logo, Ui.lp(this, Ui.dp(this, 62), Ui.dp(this, 62), 0f, 0, 0));
 
-        TextView titre = Ui.texte(this, Config.titreApp(this), 32, Ui.JAUNE, true);
+        TextView surTitre = Ui.texte(this, "VOTRE ESPACE PERSONNEL", 11, AUTH_AMBRE, true);
+        surTitre.setGravity(Gravity.CENTER);
+        surTitre.setLetterSpacing(0.14f);
+        root.addView(surTitre, Ui.lp(this, -1, -2, 0f, 17, 0));
+
+        TextView titre = Ui.texte(this, Config.titreApp(this), 29, AUTH_TEXTE, true);
         titre.setGravity(Gravity.CENTER);
-        root.addView(titre, Ui.lp(this, -1, -2, 0f, 4, 0));
-        animations.add(Ui.titreColore(titre));
+        root.addView(titre, Ui.lp(this, -1, -2, 0f, 3, 0));
 
-        intro = Ui.texte(this, "", 14, Ui.TXT2, false);
+        intro = Ui.texte(this, "", 14, AUTH_DISCRET, false);
         intro.setGravity(Gravity.CENTER);
-        root.addView(intro, Ui.lp(this, -1, -2, 0f, 4, 0));
+        root.addView(intro, Ui.lp(this, -1, -2, 0f, 7, 0));
 
         carte = new LinearLayout(this);
         carte.setOrientation(LinearLayout.VERTICAL);
-        carte.setBackground(Ui.rond(0x55202328, 26, this));
-        int q = Ui.dp(this, 16);
+        carte.setBackground(fondCarte());
+        carte.setElevation(Ui.dp(this, 10));
+        int q = Ui.dp(this, 20);
         carte.setPadding(q, q, q, q);
-        root.addView(carte, Ui.lp(this, -1, -2, 0f, 22, 0));
+        int largeurDisponible = getResources().getDisplayMetrics().widthPixels - p * 2;
+        int largeurCarteMax = Ui.dp(this, 520);
+        LinearLayout.LayoutParams carteParams = new LinearLayout.LayoutParams(
+                Math.min(largeurDisponible, largeurCarteMax), LinearLayout.LayoutParams.WRAP_CONTENT);
+        carteParams.topMargin = Ui.dp(this, 24);
+        root.addView(carte, carteParams);
 
         // Onglets Connexion / Inscription
         onglets = new LinearLayout(this);
         onglets.setOrientation(LinearLayout.HORIZONTAL);
-        onglets.setBackground(Ui.rond(Ui.CARD, 18, this));
+        onglets.setBackground(Ui.rond(AUTH_CHAMP, 18, this));
         int o = Ui.dp(this, 4);
         onglets.setPadding(o, o, o, o);
-        ongletConnexion = Ui.lien(this, "Connexion", Ui.TXT);
+        ongletConnexion = Ui.lien(this, "Connexion", AUTH_TEXTE);
         ongletConnexion.setTextSize(15);
-        ongletInscription = Ui.lien(this, "Inscription", Ui.TXT);
+        ongletInscription = Ui.lien(this, "Inscription", AUTH_TEXTE);
         ongletInscription.setTextSize(15);
         ongletConnexion.setOnClickListener(v -> changerMode(CONNEXION));
         ongletInscription.setOnClickListener(v -> changerMode(INSCRIPTION));
@@ -100,57 +125,61 @@ public class AuthActivity extends Activity {
         carte.addView(formulaire, Ui.lp(this, -1, -2, 0f, 16, 0));
 
         champNom = Ui.champ(this, "Votre nom");
+        styliserChamp(champNom);
         champNom.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_WORDS | InputType.TYPE_TEXT_VARIATION_PERSON_NAME);
-        ligneNom = ligne("👤", champNom);
+        ligneNom = ligne("◉", champNom);
 
         champEmail = Ui.champ(this, "Adresse email");
+        styliserChamp(champEmail);
         champEmail.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS);
-        ligneEmail = ligne("✉", champEmail);
+        ligneEmail = ligne("@", champEmail);
 
         champPasse = Ui.champ(this, "Mot de passe");
+        styliserChamp(champPasse);
         champPasse.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD);
         champPasse.setImeOptions(EditorInfo.IME_ACTION_DONE);
         champPasse.setOnEditorActionListener((v, a, e) -> { valider(); return true; });
-        lignePasse = ligne("🔒", champPasse);
-        oeil = Ui.lien(this, "👁", Ui.TXT);
+        lignePasse = ligne("◇", champPasse);
+        oeil = Ui.lien(this, "Afficher", AUTH_AMBRE);
         oeil.setOnClickListener(v -> basculerPasse());
         lignePasse.addView(oeil, Ui.lp(this, -2, -2, 0f, 0, 4));
 
         champCode = Ui.champ(this, "Code (6 chiffres)");
+        styliserChamp(champCode);
         champCode.setInputType(InputType.TYPE_CLASS_NUMBER);
-        ligneCode = ligne("🔑", champCode);
+        ligneCode = ligne("#", champCode);
 
         champSerie = Ui.champ(this, "Numéro de série (XXXX-XXXX-XXXX-XXXX)");
+        styliserChamp(champSerie);
         champSerie.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        ligneSerie = ligne("🔢", champSerie);
-        copier = Ui.lien(this, "📋", Ui.TXT);
+        ligneSerie = ligne("№", champSerie);
+        copier = Ui.lien(this, "Copier", AUTH_AMBRE);
         copier.setOnClickListener(v -> copierSerie());
         ligneSerie.addView(copier, Ui.lp(this, -2, -2, 0f, 0, 4));
 
-        message = Ui.texte(this, "", 14, Ui.JAUNE, false);
-        message.setGravity(Gravity.CENTER);
+        message = Ui.texte(this, "", 13, AUTH_DISCRET, false);
+        message.setGravity(Gravity.START);
         message.setTextIsSelectable(true);
 
         action = Ui.boutonPilule(this, "", Ui.ACCENT, Ui.ROSE);
         action.setOnClickListener(v -> valider());
 
-        lienOubli = Ui.lien(this, "Mot de passe oublié ?", Ui.JAUNE);
+        lienOubli = Ui.lien(this, "Mot de passe oublié ?", AUTH_AMBRE);
         lienOubli.setOnClickListener(v -> { etapeCode = false; changerMode(OUBLI); });
 
-        lienConfirmer = Ui.lien(this, "Confirmer mon compte", Ui.JAUNE);
+        lienConfirmer = Ui.lien(this, "Confirmer mon compte", AUTH_AMBRE);
         lienConfirmer.setOnClickListener(v -> changerMode(CONFIRMATION));
 
-        lienRenvoyer = Ui.lien(this, "Obtenir un nouveau code", Ui.JAUNE);
+        lienRenvoyer = Ui.lien(this, "Obtenir un nouveau code", AUTH_AMBRE);
         lienRenvoyer.setOnClickListener(v -> demanderCode(mode == OUBLI ? "reinitialisation" : "confirmation"));
 
-        lienRetour = Ui.lien(this, "← Retour à la connexion", Ui.TXT2);
+        lienRetour = Ui.lien(this, "← Retour à la connexion", AUTH_DISCRET);
         lienRetour.setOnClickListener(v -> changerMode(CONNEXION));
 
         ScrollView sv = new ScrollView(this);
         sv.setFillViewport(true);
         sv.addView(root);
-        animations.add(Ui.fondAnime(sv));
         setContentView(sv);
 
         Ui.entree(logo, 0);
@@ -163,8 +192,8 @@ public class AuthActivity extends Activity {
 
     @Override
     protected void onDestroy() {
-        for (Animator a : animations) a.cancel();
-        animations.clear();
+        if (dialogCode != null && dialogCode.isShowing()) dialogCode.dismiss();
+        dialogCode = null;
         super.onDestroy();
     }
 
@@ -175,11 +204,46 @@ public class AuthActivity extends Activity {
         LinearLayout l = new LinearLayout(this);
         l.setOrientation(LinearLayout.HORIZONTAL);
         l.setGravity(Gravity.CENTER_VERTICAL);
-        TextView i = Ui.texte(this, icone, 20, Ui.TXT, false);
+        TextView i = Ui.texte(this, icone, 18, AUTH_AMBRE, true);
         i.setGravity(Gravity.CENTER);
-        l.addView(i, Ui.lp(this, Ui.dp(this, 30), -2, 0f, 0, 0));
-        l.addView(champ, Ui.lp(this, 0, -2, 1f, 0, 6));
+        l.addView(i, Ui.lp(this, Ui.dp(this, 28), -2, 0f, 0, 0));
+        l.addView(champ, Ui.lp(this, 0, -2, 1f, 0, 5));
         return l;
+    }
+
+    private GradientDrawable fondCarte() {
+        GradientDrawable g = Ui.rond(AUTH_CARTE, 24, this);
+        g.setStroke(Ui.dp(this, 1), 0xFF26334D);
+        return g;
+    }
+
+    private GradientDrawable fondChamp(boolean actif) {
+        GradientDrawable g = Ui.rond(AUTH_CHAMP, 14, this);
+        g.setStroke(Ui.dp(this, actif ? 2 : 1), actif ? AUTH_AMBRE : 0xFF2B3852);
+        return g;
+    }
+
+    private void styliserChamp(EditText champ) {
+        champ.setTextColor(AUTH_TEXTE);
+        champ.setHintTextColor(0xFF8694AE);
+        champ.setPadding(Ui.dp(this, 13), Ui.dp(this, 12), Ui.dp(this, 13), Ui.dp(this, 12));
+        champ.setBackground(fondChamp(false));
+        champ.setOnFocusChangeListener((v, actif) -> v.setBackground(fondChamp(actif)));
+    }
+
+    private void ajouterChamp(String libelle, View champ, int margeHaut) {
+        TextView label = Ui.texte(this, libelle, 11, AUTH_DISCRET, true);
+        label.setLetterSpacing(0.08f);
+        formulaire.addView(label, Ui.lp(this, -1, -2, 0f, margeHaut, 0));
+        formulaire.addView(champ, Ui.lp(this, -1, -2, 0f, 6, 0));
+    }
+
+    private TextView conseil(String texte) {
+        TextView t = Ui.texte(this, texte, 12, AUTH_DISCRET, false);
+        int p = Ui.dp(this, 12);
+        t.setPadding(p, p, p, p);
+        t.setBackground(Ui.rond(0xFF202B42, 14, this));
+        return t;
     }
 
     private void changerMode(int nouveau) {
@@ -199,49 +263,50 @@ public class AuthActivity extends Activity {
     /** Remet dans le formulaire les champs et boutons correspondant au mode courant. */
     private void construire() {
         formulaire.removeAllViews();
+        message.setText("");
         boolean avecOnglets = mode == CONNEXION || mode == INSCRIPTION;
         onglets.setVisibility(avecOnglets ? View.VISIBLE : View.GONE);
-        marquerOnglet(ongletConnexion, mode == CONNEXION, Ui.ACCENT, Ui.ROSE);
-        marquerOnglet(ongletInscription, mode == INSCRIPTION, Ui.VERT, 0xFF12B5CB);
+        marquerOnglet(ongletConnexion, mode == CONNEXION);
+        marquerOnglet(ongletInscription, mode == INSCRIPTION);
 
         int c1, c2;
         String libelle;
         champPasse.setHint("Mot de passe");
         if (mode == CONNEXION) {
-            intro.setText("Connectez-vous pour entrer");
-            c1 = Ui.ACCENT; c2 = Ui.ROSE; libelle = "Se connecter";
-            formulaire.addView(ligneEmail);
-            formulaire.addView(lignePasse, Ui.lp(this, -1, -2, 0f, 10, 0));
+            intro.setText("Connectez-vous pour retrouver votre espace.");
+            c1 = AUTH_ORANGE; c2 = AUTH_AMBRE; libelle = "Se connecter";
+            ajouterChamp("ADRESSE E-MAIL", ligneEmail, 18);
+            ajouterChamp("MOT DE PASSE", lignePasse, 14);
         } else if (mode == INSCRIPTION) {
-            intro.setText("Créez votre compte en quelques secondes");
-            c1 = Ui.VERT; c2 = 0xFF12B5CB; libelle = "Créer mon compte";
-            formulaire.addView(ligneNom);
-            formulaire.addView(ligneEmail, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(lignePasse, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(Ui.texte(this, "ℹ Un numéro de série vous sera donné : gardez-le précieusement, "
-                    + "il sera indispensable si vous oubliez votre mot de passe.", 12, Ui.TXT2, false), Ui.lp(this, -1, -2, 0f, 10, 0));
+            intro.setText("Créez votre compte en quelques étapes.");
+            c1 = AUTH_ORANGE; c2 = AUTH_AMBRE; libelle = "Créer mon compte";
+            ajouterChamp("NOM", ligneNom, 18);
+            ajouterChamp("ADRESSE E-MAIL", ligneEmail, 12);
+            ajouterChamp("MOT DE PASSE", lignePasse, 12);
+            formulaire.addView(conseil("Votre numéro de série sera nécessaire pour récupérer votre compte."),
+                    Ui.lp(this, -1, -2, 0f, 12, 0));
         } else if (mode == CONFIRMATION) {
-            intro.setText("Confirmez votre compte");
-            c1 = Ui.VERT; c2 = 0xFF12B5CB; libelle = "Confirmer mon compte";
-            formulaire.addView(Ui.texte(this, "⚠ Notez ou copiez votre numéro de série (bouton 📋) : "
-                    + "sans lui, impossible de récupérer votre compte.", 13, Ui.JAUNE, false));
-            formulaire.addView(ligneEmail, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(ligneSerie, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(ligneCode, Ui.lp(this, -1, -2, 0f, 10, 0));
+            intro.setText("Encore une étape pour sécuriser votre compte.");
+            c1 = AUTH_ORANGE; c2 = AUTH_AMBRE; libelle = "Confirmer mon compte";
+            formulaire.addView(conseil("Conservez votre numéro de série dans un endroit sûr : il vous servira pour récupérer votre compte."),
+                    Ui.lp(this, -1, -2, 0f, 4, 0));
+            ajouterChamp("ADRESSE E-MAIL", ligneEmail, 14);
+            ajouterChamp("NUMÉRO DE SÉRIE", ligneSerie, 12);
+            ajouterChamp("CODE DE CONFIRMATION", ligneCode, 12);
         } else if (!etapeCode) {
-            intro.setText("Mot de passe oublié");
-            c1 = Ui.VIOLET; c2 = Ui.BLEU; libelle = "Obtenir le code";
-            formulaire.addView(Ui.texte(this, "Entrez votre email et le numéro de série reçu à l'inscription : "
-                    + "vous obtiendrez un code pour choisir un nouveau mot de passe.", 13, Ui.TXT2, false));
-            formulaire.addView(ligneEmail, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(ligneSerie, Ui.lp(this, -1, -2, 0f, 10, 0));
+            intro.setText("Récupérez simplement l’accès à votre compte.");
+            c1 = AUTH_ORANGE; c2 = AUTH_AMBRE; libelle = "Obtenir le code";
+            formulaire.addView(conseil("Saisissez l’adresse e-mail et le numéro de série utilisés à l’inscription."),
+                    Ui.lp(this, -1, -2, 0f, 4, 0));
+            ajouterChamp("ADRESSE E-MAIL", ligneEmail, 14);
+            ajouterChamp("NUMÉRO DE SÉRIE", ligneSerie, 12);
         } else {
-            intro.setText("Nouveau mot de passe");
-            c1 = Ui.VIOLET; c2 = Ui.BLEU; libelle = "Changer le mot de passe";
-            formulaire.addView(ligneEmail);
-            formulaire.addView(ligneSerie, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(ligneCode, Ui.lp(this, -1, -2, 0f, 10, 0));
-            formulaire.addView(lignePasse, Ui.lp(this, -1, -2, 0f, 10, 0));
+            intro.setText("Choisissez un nouveau mot de passe.");
+            c1 = AUTH_ORANGE; c2 = AUTH_AMBRE; libelle = "Changer le mot de passe";
+            ajouterChamp("ADRESSE E-MAIL", ligneEmail, 4);
+            ajouterChamp("NUMÉRO DE SÉRIE", ligneSerie, 12);
+            ajouterChamp("CODE DE RÉINITIALISATION", ligneCode, 12);
+            ajouterChamp("NOUVEAU MOT DE PASSE", lignePasse, 12);
             champPasse.setHint("Nouveau mot de passe");
         }
         boolean passeFinal = mode == OUBLI && etapeCode || mode == CONNEXION || mode == INSCRIPTION;
@@ -252,15 +317,15 @@ public class AuthActivity extends Activity {
         formulaire.addView(message, Ui.lp(this, -1, -2, 0f, 12, 0));
 
         action.setText(libelle);
-        action.setBackground(Ui.onde(c1, c2, 28, this));
+        action.setBackground(Ui.onde(c1, c2, 20, this));
         formulaire.addView(action, Ui.lp(this, -1, -2, 0f, 12, 0));
 
         if (mode == CONNEXION) {
-            formulaire.addView(lienOubli, Ui.lp(this, -2, -2, 0f, 6, 0));
-            formulaire.addView(lienConfirmer, Ui.lp(this, -2, -2, 0f, 2, 0));
+            formulaire.addView(lienOubli, Ui.lp(this, -2, -2, 0f, 8, 0));
+            formulaire.addView(lienConfirmer, Ui.lp(this, -2, -2, 0f, 3, 0));
         }
-        if (mode == CONFIRMATION || (mode == OUBLI && etapeCode)) formulaire.addView(lienRenvoyer, Ui.lp(this, -2, -2, 0f, 6, 0));
-        if (mode == OUBLI || mode == CONFIRMATION) formulaire.addView(lienRetour, Ui.lp(this, -2, -2, 0f, 6, 0));
+        if (mode == CONFIRMATION || (mode == OUBLI && etapeCode)) formulaire.addView(lienRenvoyer, Ui.lp(this, -2, -2, 0f, 8, 0));
+        if (mode == OUBLI || mode == CONFIRMATION) formulaire.addView(lienRetour, Ui.lp(this, -2, -2, 0f, 7, 0));
         ((LinearLayout.LayoutParams) action.getLayoutParams()).gravity = Gravity.CENTER;
     }
 
@@ -272,13 +337,163 @@ public class AuthActivity extends Activity {
         info("Numéro de série copié ✔ Collez-le dans vos notes.", false);
     }
 
-    private void marquerOnglet(Button b, boolean actif, int c1, int c2) {
+    /**
+     * Présente les identifiants dans une fenêtre dédiée : ils ne sont plus mélangés aux erreurs
+     * ou aux messages de formulaire. Le partage ouvre uniquement la feuille Android, jamais un envoi.
+     */
+    private void afficherCodeDialog(String titre, String sousTitre, String numeroSerie, String code) {
+        if (dialogCode != null && dialogCode.isShowing()) dialogCode.dismiss();
+        final String serieSure = numeroSerie == null ? "" : numeroSerie.trim();
+        final String codeSur = code == null ? "" : code.trim();
+        if (codeSur.isEmpty()) {
+            info("Le code n’a pas été reçu. Demandez un nouveau code pour continuer.", true);
+            return;
+        }
+        final String libelleCode = mode == OUBLI ? "Code de réinitialisation" : "Code de confirmation";
+        final String etiquetteCode = mode == OUBLI ? "CODE DE RÉINITIALISATION" : "CODE DE CONFIRMATION";
+
+        LinearLayout contenu = new LinearLayout(this);
+        contenu.setOrientation(LinearLayout.VERTICAL);
+        int p = Ui.dp(this, 20);
+        contenu.setPadding(p, p, p, p);
+        contenu.setBackground(fondCarte());
+
+        TextView badge = Ui.texte(this, "ACCÈS À CONSERVER", 10, AUTH_AMBRE, true);
+        badge.setLetterSpacing(0.12f);
+        contenu.addView(badge);
+
+        TextView entete = Ui.texte(this, titre, 22, AUTH_TEXTE, true);
+        contenu.addView(entete, Ui.lp(this, -1, -2, 0f, 8, 0));
+
+        TextView description = Ui.texte(this, sousTitre, 13, AUTH_DISCRET, false);
+        contenu.addView(description, Ui.lp(this, -1, -2, 0f, 5, 0));
+
+        contenu.addView(blocValeur("NUMÉRO DE SÉRIE", serieSure, false, () -> copierValeur("Numéro de série", serieSure)),
+                Ui.lp(this, -1, -2, 0f, 18, 0));
+        contenu.addView(blocValeur(etiquetteCode, codeSur, true, () -> copierValeur(libelleCode, codeSur)),
+                Ui.lp(this, -1, -2, 0f, 10, 0));
+
+        Button copierTout = boutonDialog("Copier le code et le numéro", 0xFF27344D, 0xFF34435F);
+        copierTout.setTextColor(AUTH_TEXTE);
+        copierTout.setOnClickListener(v -> copierValeur("Code et numéro de série",
+                "Numéro de série : " + serieSure + "\nCode : " + codeSur));
+        contenu.addView(copierTout, Ui.lp(this, -1, -2, 0f, 10, 0));
+
+        TextView avertissement = conseil("Pour garder ces accès, partagez-les uniquement dans une conversation WhatsApp avec vous-même. Le code sert à valider ou récupérer votre compte.");
+        contenu.addView(avertissement, Ui.lp(this, -1, -2, 0f, 12, 0));
+
+        Button partager = boutonDialog("Partager sur WhatsApp", 0xFF1FAF73, 0xFF11885A);
+        partager.setOnClickListener(v -> partagerCodes(serieSure, codeSur, libelleCode));
+        contenu.addView(partager, Ui.lp(this, -1, -2, 0f, 14, 0));
+
+        Button continuer = boutonDialog("Continuer dans l’application", AUTH_ORANGE, AUTH_AMBRE);
+        continuer.setOnClickListener(v -> {
+            champCode.setText(codeSur);
+            if (dialogCode != null) dialogCode.dismiss();
+            champCode.requestFocus();
+        });
+        contenu.addView(continuer, Ui.lp(this, -1, -2, 0f, 8, 0));
+
+        ScrollView defilement = new ScrollView(this);
+        defilement.setFillViewport(false);
+        defilement.setClipToPadding(false);
+        defilement.addView(contenu);
+
+        AlertDialog dialogue = new AlertDialog.Builder(this).setView(defilement).create();
+        dialogue.setCancelable(true);
+        dialogue.setCanceledOnTouchOutside(false);
+        dialogue.setOnDismissListener(d -> {
+            if (dialogCode == dialogue) dialogCode = null;
+        });
+        dialogCode = dialogue;
+        dialogue.show();
+        if (dialogue.getWindow() != null) {
+            dialogue.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+            int largeurEcran = getResources().getDisplayMetrics().widthPixels;
+            int largeurMax = Ui.dp(this, 460);
+            int marge = Ui.dp(this, 32);
+            dialogue.getWindow().setLayout(Math.min(largeurEcran - marge, largeurMax),
+                    WindowManager.LayoutParams.WRAP_CONTENT);
+        }
+    }
+
+    private LinearLayout blocValeur(String libelle, String valeur, boolean important, Runnable actionCopie) {
+        LinearLayout bloc = new LinearLayout(this);
+        bloc.setOrientation(LinearLayout.VERTICAL);
+        int p = Ui.dp(this, 13);
+        bloc.setPadding(p, p, p, p);
+        bloc.setBackground(Ui.rond(AUTH_CHAMP, 16, this));
+
+        TextView etiquette = Ui.texte(this, libelle, 10, AUTH_DISCRET, true);
+        etiquette.setLetterSpacing(0.08f);
+        bloc.addView(etiquette);
+
+        LinearLayout ligneValeur = new LinearLayout(this);
+        ligneValeur.setOrientation(LinearLayout.HORIZONTAL);
+        ligneValeur.setGravity(Gravity.CENTER_VERTICAL);
+        TextView contenu = Ui.texte(this, valeur.isEmpty() ? "—" : valeur,
+                important ? 23 : 15, important ? AUTH_TEXTE : AUTH_AMBRE, true);
+        contenu.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        contenu.setSingleLine(false);
+        ligneValeur.addView(contenu, Ui.lp(this, 0, -2, 1f, 8, 0));
+
+        Button copierValeur = boutonDialog("Copier", 0xFF27344D, 0xFF34435F);
+        copierValeur.setTextColor(AUTH_AMBRE);
+        copierValeur.setTextSize(12);
+        copierValeur.setEnabled(!valeur.isEmpty());
+        copierValeur.setAlpha(valeur.isEmpty() ? 0.5f : 1f);
+        copierValeur.setOnClickListener(v -> actionCopie.run());
+        ligneValeur.addView(copierValeur, Ui.lp(this, -2, -2, 0f, 4, 8));
+        bloc.addView(ligneValeur);
+        return bloc;
+    }
+
+    private Button boutonDialog(String texte, int couleur1, int couleur2) {
+        Button b = new Button(this);
+        b.setText(texte);
+        b.setAllCaps(false);
+        b.setTextSize(14);
+        b.setTextColor(AUTH_TEXTE);
+        b.setTypeface(null, Typeface.BOLD);
+        b.setStateListAnimator(null);
+        b.setMinHeight(Ui.dp(this, 46));
+        b.setPadding(Ui.dp(this, 12), Ui.dp(this, 9), Ui.dp(this, 12), Ui.dp(this, 9));
+        b.setBackground(Ui.onde(couleur1, couleur2, 14, this));
+        Ui.pression(b);
+        return b;
+    }
+
+    private void copierValeur(String etiquette, String valeur) {
+        if (valeur == null || valeur.trim().isEmpty()) return;
+        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (cm != null) {
+            cm.setPrimaryClip(ClipData.newPlainText(etiquette, valeur));
+            Toast.makeText(this, etiquette + " copié", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void partagerCodes(String numeroSerie, String code, String libelleCode) {
+        String texte = Config.titreApp(this) + "\n"
+                + "Numéro de série : " + numeroSerie + "\n"
+                + libelleCode + " : " + code + "\n\n"
+                + "Message personnel de sauvegarde — ne pas transférer à une autre personne.";
+        Intent partage = new Intent(Intent.ACTION_SEND);
+        partage.setType("text/plain");
+        partage.putExtra(Intent.EXTRA_TEXT, texte);
+        try {
+            startActivity(Intent.createChooser(partage, "Choisir WhatsApp pour garder vos accès"));
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(this, "Aucune application de partage n’est disponible.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void marquerOnglet(Button b, boolean actif) {
         if (actif) {
-            b.setBackground(Ui.onde(c1, c2, 14, this));
-            b.setTextColor(Ui.TXT);
+            b.setBackground(Ui.onde(AUTH_ORANGE, AUTH_AMBRE, 14, this));
+            b.setTextColor(AUTH_TEXTE);
         } else {
             b.setBackground(null);
-            b.setTextColor(Ui.TXT2);
+            b.setTextColor(AUTH_DISCRET);
         }
     }
 
@@ -287,11 +502,11 @@ public class AuthActivity extends Activity {
         champPasse.setTransformationMethod(passeVisible ? HideReturnsTransformationMethod.getInstance()
                 : PasswordTransformationMethod.getInstance());
         champPasse.setSelection(champPasse.getText().length());
-        oeil.setText(passeVisible ? "🙈" : "👁");
+        oeil.setText(passeVisible ? "Masquer" : "Afficher");
     }
 
     private void info(String t, boolean erreur) {
-        message.setTextColor(erreur ? 0xFFFFB4A8 : 0xFF9BE8B8);
+        message.setTextColor(erreur ? 0xFFFFAAA6 : AUTH_AMBRE);
         message.setText(t);
     }
 
@@ -342,12 +557,13 @@ public class AuthActivity extends Activity {
         }
     }
 
-    /** Demande un code à la base (il faut l'email ET le numéro de série) ; le code s'affiche dans la zone de message. */
+    /** Demande un code à la base (il faut l'email ET le numéro de série) puis ouvre la fenêtre de conservation. */
     private void demanderCode(final String objet) {
         if (occupe) return;
         if (!emailValide(email())) { info("Entrez une adresse email valide.", true); return; }
         if (serie().length() < 12) { info("Entrez votre numéro de série.", true); return; }
         final String e = email(), s = serie();
+        message.setText("");
         occupe(true);
         new Thread(() -> {
             final Compte.Resultat r = Compte.demanderCode(e, s, objet);
@@ -357,7 +573,10 @@ public class AuthActivity extends Activity {
                     boolean premiere = mode == OUBLI && !etapeCode;
                     if (mode == OUBLI) etapeCode = true;
                     construire();
-                    info(r.message, false);
+                    afficherCodeDialog("Votre code est prêt",
+                            mode == OUBLI ? "Saisissez ce code pour choisir un nouveau mot de passe."
+                                    : "Saisissez ce code pour terminer la confirmation de votre compte.",
+                            s, Compte.dernierCode);
                     if (premiere || mode == CONFIRMATION) champCode.requestFocus();
                 } else {
                     construire();
@@ -390,9 +609,9 @@ public class AuthActivity extends Activity {
                     champSerie.setText(Compte.derniereSerie);
                     champCode.setText("");
                     construire();
-                    info("Compte créé ✔\n\nVotre numéro de série :\n" + Compte.derniereSerie
-                            + "\n\nVotre code de confirmation : " + Compte.dernierCode
-                            + "\n\nGardez bien ce numéro de série : il sera demandé si vous oubliez votre mot de passe.", false);
+                    afficherCodeDialog("Votre compte est prêt",
+                            "Gardez ces deux informations : le numéro de série vous servira à récupérer votre compte.",
+                            Compte.derniereSerie, Compte.dernierCode);
                 } else if ("connexion".equals(r.suite)) {
                     mode = CONNEXION;
                     etapeCode = false;

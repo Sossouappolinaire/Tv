@@ -75,11 +75,11 @@ final class Config {
                 + "\n   appliquée sur ce téléphone le " + date(sp.getLong("applique_ms", 0L));
     }
 
-    /** Nom de l'appli affiché dans l'appli (accueil, connexion) : clé "titre" de la configuration, sinon « Sossokouamé ». */
+    /** Nom de l'appli affiché dans l'appli (accueil, connexion) : clé "titre" de la configuration, sinon « Kouamé Play Box ». */
     static String titreApp(Context c) {
         JSONObject cfg = contenu(c);
         String t = cfg == null ? "" : cfg.optString("titre", "").trim();
-        return t.isEmpty() ? "Sossokouamé" : t;
+        return t.isEmpty() ? "Kouamé Play Box" : t;
     }
 
     /** Annonce déjà vue (une annonce ne s'affiche qu'une fois par identifiant). */

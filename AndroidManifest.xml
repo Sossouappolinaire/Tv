@@ -53,7 +53,7 @@
 
     <application
         android:name=".App"
-        android:label="Sossokouamé"
+        android:label="Kouamé Play Box"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
@@ -179,6 +179,19 @@
 
         <activity
             android:name=".JeuPlateformeActivity"
+            android:exported="false"
+            android:screenOrientation="sensorLandscape"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />
+
+        <!-- Combat Mortel : menu / salon en ligne (portrait) et combat (paysage) -->
+        <activity
+            android:name=".JeuMotardActivity"
+            android:exported="false"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait" />
+
+        <activity
+            android:name=".MotardCombatActivity"
             android:exported="false"
             android:screenOrientation="sensorLandscape"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize" />

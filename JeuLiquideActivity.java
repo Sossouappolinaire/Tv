@@ -9,6 +9,8 @@ import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.SystemClock;
+import android.view.HapticFeedbackConstants;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.WindowManager;
@@ -21,6 +23,8 @@ import java.util.Random;
  * Jeu du Liquide (tri de liquides) : on touche un tube puis un autre pour verser le liquide du dessus.
  * On ne peut verser que sur un tube vide ou sur la même couleur, s'il reste de la place.
  * Le niveau est gagné quand chaque tube ne contient plus qu'une seule couleur.
+ * Le liquide se verse en animation (le tube se penche et le filet coule dans l'autre) ; un coup impossible fait
+ * trembler les deux tubes en rouge, avec un son et un message.
  * Boutons : Annuler, Recommencer, + Tube (un tube vide en plus, une fois par niveau).
  */
 public class JeuLiquideActivity extends Activity {
@@ -66,6 +70,18 @@ public class JeuLiquideActivity extends Activity {
         private RectF bAnnuler = new RectF(), bRecommencer = new RectF(), bTube = new RectF();
         private Shader fond;
 
+        // animation de versement : le tube source se penche au-dessus du tube cible et le liquide coule
+        private static final long ANIM_MS = 800;
+        private int animA = -1, animB = -1, animN, animCol;
+        private long animDebut;
+        private boolean finEnAttente;
+        // effet « coup impossible » : les deux tubes tremblent et clignotent en rouge
+        private static final long ERR_MS = 480;
+        private int errA = -1, errB = -1;
+        private long errDebut;
+        private String msgErreur = "";
+        private long msgFin;
+
         VueLiquide(Context c) {
             super(c);
             ctx = c;
@@ -100,6 +116,12 @@ public class JeuLiquideActivity extends Activity {
             gagne = false;
             tubeAjoute = false;
             historique.clear();
+            animA = -1;
+            animB = -1;
+            finEnAttente = false;
+            errA = -1;
+            errB = -1;
+            msgFin = 0;
             depart = instantane();
             calculerDispo();
             invalidate();
@@ -149,18 +171,48 @@ public class JeuLiquideActivity extends Activity {
             historique.add(instantane());
             if (historique.size() > 80) historique.remove(0);
             int couleur = tube[a][nb[a] - 1];
+            int avant = nb[a];
             while (nb[a] > 0 && tube[a][nb[a] - 1] == couleur && nb[b] < CAP) {
                 tube[b][nb[b]++] = couleur;
                 nb[a]--;
             }
             coups++;
-            if (resolu()) {
+            Sons.jouer(ctx, Sons.VERSER);
+            // l'état est déjà à jour ; l'animation montre le liquide qui coule, la victoire est annoncée après
+            animA = a;
+            animB = b;
+            animN = avant - nb[a];
+            animCol = couleur;
+            animDebut = SystemClock.uptimeMillis();
+            finEnAttente = resolu();
+            postInvalidateOnAnimation();
+        }
+
+        /** Fin de l'animation : on annonce la victoire si le niveau est résolu. */
+        private void terminerAnim() {
+            animA = -1;
+            animB = -1;
+            if (finEnAttente) {
+                finEnAttente = false;
+                Sons.jouer(ctx, Sons.GAGNE);
                 gagne = true;
                 if (niveau > record) {
                     record = niveau;
                     sauver();
                 }
             }
+        }
+
+        /** Coup impossible : les deux tubes tremblent en rouge, avec un son, une vibration et une explication. */
+        private void erreur(int a, int b) {
+            errA = a;
+            errB = b;
+            errDebut = SystemClock.uptimeMillis();
+            msgErreur = nb[b] >= CAP ? "Ce tube est plein" : "Couleurs différentes : impossible de verser";
+            msgFin = errDebut + 1600;
+            Sons.jouer(ctx, Sons.TOUCHE);
+            try { performHapticFeedback(HapticFeedbackConstants.LONG_PRESS); } catch (Exception ignore) { /* sans vibration */ }
+            postInvalidateOnAnimation();
         }
 
         // ------------------------------------------------------------------ dispositions
@@ -205,6 +257,7 @@ public class JeuLiquideActivity extends Activity {
         @Override
         public boolean onTouchEvent(MotionEvent e) {
             if (e.getActionMasked() != MotionEvent.ACTION_DOWN) return true;
+            if (animA >= 0) return true;                 // pendant que le liquide coule, on attend
             float x = e.getX(), y = e.getY();
             if (gagne) {
                 niveau = Math.min(niveau + 1, 60);
@@ -263,7 +316,8 @@ public class JeuLiquideActivity extends Activity {
                 verser(choisi, i);
                 choisi = -1;
             } else {
-                choisi = nb[i] > 0 ? i : -1;
+                erreur(choisi, i);
+                choisi = -1;
             }
             invalidate();
         }
@@ -291,11 +345,25 @@ public class JeuLiquideActivity extends Activity {
             texte(c, "Niveau " + niveau, larg / 2f, 56f * d, 28f, 0xFFFFEB3B, Paint.Align.CENTER);
             texte(c, "Coups : " + coups + "     🏆 Record : niveau " + record, larg / 2f, 86f * d, 14f, 0xFFFFFFFF, Paint.Align.CENTER);
 
-            for (int i = 0; i < nt && i < zones.size(); i++) dessinerTube(c, i);
+            long maintenant = SystemClock.uptimeMillis();
+            float t = 0f;
+            if (animA >= 0) {
+                t = (maintenant - animDebut) / (float) ANIM_MS;
+                if (t >= 1f) { terminerAnim(); t = 0f; }
+            }
+            for (int i = 0; i < nt && i < zones.size(); i++) if (i != animA) dessinerTube(c, i, t, maintenant);
+            if (animA >= 0 && animA < zones.size() && animB < zones.size()) dessinerVersement(c, t, maintenant);
 
             bouton(c, bAnnuler, "↶ Annuler", !historique.isEmpty());
             bouton(c, bRecommencer, "⟳ Recommencer", true);
             bouton(c, bTube, "＋ Tube", !tubeAjoute && nt < 14);
+
+            if (maintenant < msgFin && !gagne) {
+                int alpha = (int) (255 * Math.min(1f, (msgFin - maintenant) / 400f));
+                texte(c, msgErreur, larg / 2f, 106f * d, 14f, (alpha << 24) | 0xFF8A80, Paint.Align.CENTER);
+            }
+
+            if (animA >= 0 || maintenant - errDebut < ERR_MS || maintenant < msgFin) postInvalidateOnAnimation();
 
             if (gagne) {
                 p.setColor(0xAA000000);
@@ -306,34 +374,95 @@ public class JeuLiquideActivity extends Activity {
             }
         }
 
-        private void dessinerTube(Canvas c, int i) {
+        private static float borne(float v) { return v < 0f ? 0f : (v > 1f ? 1f : v); }
+
+        /** Avancement du versement proprement dit (0 = rien versé, 1 = tout versé). */
+        private static float avancementVersement(float t) { return borne((t - 0.2f) / 0.65f); }
+
+        private void dessinerTube(Canvas c, int i, float t, long maintenant) {
             RectF z = zones.get(i);
             float haussement = i == choisi ? 18f * d : 0f;
             float top = z.top - haussement, bas = z.bottom - haussement;
             float rayon = tubeW / 2f;
-            // liquide, du bas vers le haut
-            for (int j = 0; j < nb[i]; j++) {
-                float yb = bas - 7f * d - j * couche;
-                float yh = yb - couche;
+
+            // tremblement et contour rouge si le dernier coup était impossible
+            float dx = 0f;
+            boolean erreurEnCours = (i == errA || i == errB) && maintenant - errDebut < ERR_MS;
+            if (erreurEnCours) {
+                long ecoule = maintenant - errDebut;
+                dx = (float) Math.sin(ecoule * 0.06) * 7f * d * (1f - ecoule / (float) ERR_MS);
+            }
+            c.save();
+            c.translate(dx, 0f);
+
+            float pv = avancementVersement(t);
+            int total = nb[i] + (i == animA ? animN : 0);
+            float acc = 0f;                                   // hauteur déjà remplie, du bas vers le haut
+            // liquide, du bas vers le haut (les couches en cours de versement sont partielles)
+            for (int j = 0; j < total; j++) {
+                int col;
+                float frac = 1f;
+                if (j < nb[i]) {
+                    col = tube[i][j];
+                    if (i == animB && j >= nb[i] - animN) frac = pv;          // le tube cible se remplit
+                } else {
+                    col = animCol;
+                    frac = 1f - pv;                                           // le tube source se vide
+                }
+                if (frac <= 0f) continue;
+                float yb = bas - 7f * d - acc;
+                float yh = yb - couche * frac;
+                acc += couche * frac;
                 p.setStyle(Paint.Style.FILL);
-                p.setColor(COULEURS[tube[i][j]]);
+                p.setColor(COULEURS[col]);
                 if (j == 0) {
                     r.set(z.left + 4f * d, yh, z.right - 4f * d, bas - 3f * d);
                     c.drawRoundRect(r, rayon * 0.8f, rayon * 0.8f, p);
-                    c.drawRect(z.left + 4f * d, yh, z.right - 4f * d, yh + couche / 2f, p);
+                    c.drawRect(z.left + 4f * d, yh, z.right - 4f * d, yh + (yb - yh) / 2f, p);
                 } else {
                     c.drawRect(z.left + 4f * d, yh, z.right - 4f * d, yb + 1f, p);
                 }
                 p.setColor(0x33FFFFFF);                                  // reflet
-                c.drawRect(z.left + 8f * d, yh + 2f, z.left + 12f * d, yb - 2f, p);
+                c.drawRect(z.left + 8f * d, yh + 2f, z.left + 12f * d, Math.max(yh + 2f, yb - 2f), p);
             }
             // verre
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(3f * d);
-            p.setColor(i == choisi ? 0xFFFFEB3B : 0xCCFFFFFF);
+            p.setColor(erreurEnCours ? 0xFFFF5252 : (i == choisi ? 0xFFFFEB3B : 0xCCFFFFFF));
             r.set(z.left, top, z.right, bas);
             c.drawRoundRect(r, rayon, rayon, p);
             p.setStyle(Paint.Style.FILL);
+            c.restore();
+        }
+
+        /** Le tube source se lève, se penche au-dessus du tube cible, le liquide coule, puis il revient à sa place. */
+        private void dessinerVersement(Canvas c, float t, long maintenant) {
+            RectF za = zones.get(animA), zb = zones.get(animB);
+            float sens = zb.centerX() >= za.centerX() ? 1f : -1f;
+            float angle = 38f;
+            double rad = Math.toRadians(angle);
+            float px = zb.centerX() - sens * (tubeW / 2f) * (float) Math.cos(rad);       // pivot du tube penché
+            float py = zb.top - 16f * d - (tubeW / 2f) * (float) Math.sin(rad);
+            float m = Math.min(borne(t / 0.2f), borne((1f - t) / 0.15f));
+            m = m * m * (3f - 2f * m);                                                  // mouvement doux
+
+            // filet de liquide entre le goulot et la surface du tube cible
+            float pv = avancementVersement(t);
+            if (t > 0.2f && t < 0.85f) {
+                float rempli = (nb[animB] - animN) + animN * pv;
+                float surface = zb.bottom - 7f * d - rempli * couche;
+                float largeur = 5f * d * Math.min(1f, Math.min((t - 0.2f) / 0.06f, (0.85f - t) / 0.06f));
+                float x = zb.centerX();
+                p.setStyle(Paint.Style.FILL);
+                p.setColor(COULEURS[animCol]);
+                c.drawRect(x - largeur / 2f, zb.top - 16f * d, x + largeur / 2f, surface, p);
+            }
+
+            c.save();
+            c.translate(m * (px - za.centerX()), m * (py - za.top));
+            c.rotate(sens * angle * m, za.centerX(), za.top);
+            dessinerTube(c, animA, t, maintenant);
+            c.restore();
         }
 
         private void bouton(Canvas c, RectF b, String t, boolean actif) {

@@ -62,6 +62,7 @@ public class JeuPlateformeActivity extends Activity {
     private static final class VuePlateforme extends View {
 
         private static final int LIG = 10;            // hauteur du monde, en tuiles
+        private static final float VIS = 6.8f;        // hauteur visible à l'écran, en tuiles (plus petit = joueur plus gros)
         private static final float G = 38f;           // gravité (tuiles / s²)
         private static final float SAUT = 16f;        // vitesse du saut
         private static final float VMAX = 6.4f;       // vitesse de course
@@ -87,12 +88,12 @@ public class JeuPlateformeActivity extends Activity {
 
         // écran
         private int lw, lh;
-        private float T, vuesT, camX;
+        private float T, TH, vuesT, camX, camY;   // T : tuile du monde ; TH : unité de l'interface (boutons, textes)
         private Shader ciel;
         private float gcx, dcx, gy, gr, scx, sy, sr;
 
         // joueur
-        private float px, py, vx, vy, invul, tempsSol, tamponSaut, repriseX, repriseY;
+        private float px, py, vx, vy, invul, tempsSol, tamponSaut, repriseX, repriseY, tPas;
         private int face = 1;
         private boolean surSol, sautEnCours;
         private boolean gauche, droite, saut;
@@ -187,6 +188,7 @@ public class JeuPlateformeActivity extends Activity {
             vy = 0;
             invul = 0;
             camX = 0;
+            camY = Math.max(0f, Math.min(LIG - VIS, py - VIS * 0.65f));
             repriseX = px;
             repriseY = py;
         }
@@ -258,6 +260,7 @@ public class JeuPlateformeActivity extends Activity {
 
         private void perdreUneVie(boolean chute) {
             vies--;
+            Sons.jouer(ctx, vies <= 0 ? Sons.PERDU : Sons.PERDRE_VIE);
             if (vies <= 0) { fin(); return; }
             if (chute) {
                 px = repriseX;
@@ -284,6 +287,13 @@ public class JeuPlateformeActivity extends Activity {
                 tamponSaut = 0;
                 surSol = false;
                 sautEnCours = true;
+                Sons.jouer(ctx, Sons.SAUT);
+            }
+            if (surSol && Math.abs(vx) > 0.5f) {      // petit bruit de pas quand il avance
+                tPas -= dt;
+                if (tPas <= 0f) { Sons.jouer(ctx, Sons.PAS); tPas = 0.26f; }
+            } else {
+                tPas = 0f;
             }
             if (sautEnCours && !saut && vy < -6f) { vy = -6f; sautEnCours = false; }
             if (vy >= 0) sautEnCours = false;
@@ -313,6 +323,7 @@ public class JeuPlateformeActivity extends Activity {
                     pc[2] = 1f;
                     score += 10;
                     nbPieces++;
+                    Sons.jouer(ctx, Sons.PIECE);
                     if (nbPieces % 20 == 0 && vies < 5) vies++;
                 }
             }
@@ -333,6 +344,7 @@ public class JeuPlateformeActivity extends Activity {
                         vy = -11f;
                         sautEnCours = false;
                         score += 100;
+                        Sons.jouer(ctx, Sons.TOUCHE);
                     } else if (invul <= 0) {
                         invul = 1.8f;
                         vy = -9f;
@@ -345,6 +357,7 @@ public class JeuPlateformeActivity extends Activity {
 
             // drapeau
             if (px > flagX) {
+                Sons.jouer(ctx, Sons.GAGNE);
                 score += 500;
                 JeuxActivity.enregistrer(ctx, cle, score);
                 record = Math.max(record, score);
@@ -356,6 +369,8 @@ public class JeuPlateformeActivity extends Activity {
             float cam = px - vuesT * 0.38f;
             camX += (cam - camX) * Math.min(1f, dt * 8f);
             camX = Math.max(0f, Math.min(camX, Math.max(0f, cols - vuesT)));
+            float camCible = Math.max(0f, Math.min(LIG - VIS, py - VIS * 0.65f));
+            camY += (camCible - camY) * Math.min(1f, dt * 6f);
         }
 
         // ---------------------------------------------------------------- tactile
@@ -367,7 +382,7 @@ public class JeuPlateformeActivity extends Activity {
 
         private void toucher(float x, float y) {
             if (etat == JEU) {
-                if (dans(x, y, lw - 0.8f * T, 0.8f * T, 0.9f * T)) etat = PAUSE;
+                if (dans(x, y, lw - 0.8f * TH, 0.8f * TH, 0.9f * TH)) etat = PAUSE;
             } else if (etat == ATTENTE) {
                 etat = JEU;
             } else if (etat == PAUSE) {
@@ -408,18 +423,20 @@ public class JeuPlateformeActivity extends Activity {
             super.onSizeChanged(w, h, ow, oh);
             lw = w;
             lh = h;
-            T = h / (float) LIG;
+            T = h / VIS;
+            TH = h / (float) LIG;
             vuesT = w / T;
+            camY = Math.max(0f, Math.min(LIG - VIS, py - VIS * 0.65f));
             ciel = panda
                     ? new LinearGradient(0, 0, 0, h, 0xFF8EC9F0, 0xFFDDF0E0, Shader.TileMode.CLAMP)
                     : new LinearGradient(0, 0, 0, h, 0xFF5C94FC, 0xFFBFE4FF, Shader.TileMode.CLAMP);
-            gr = 1.0f * T;
-            gcx = 1.5f * T;
-            dcx = 4.0f * T;
-            gy = h - 1.5f * T;
-            sr = 1.3f * T;
-            scx = w - 2.1f * T;
-            sy = h - 1.8f * T;
+            gr = 1.0f * TH;
+            gcx = 1.5f * TH;
+            dcx = 4.0f * TH;
+            gy = h - 1.5f * TH;
+            sr = 1.3f * TH;
+            scx = w - 2.1f * TH;
+            sy = h - 1.8f * TH;
         }
 
         // ---------------------------------------------------------------- dessin
@@ -443,9 +460,12 @@ public class JeuPlateformeActivity extends Activity {
             }
 
             fond(c);
+            c.save();
+            c.translate(0f, -camY * T);
             tuiles(c);
             objets(c);
             joueur(c);
+            c.restore();
             hud(c);
             commandes(c);
             messages(c);
@@ -836,29 +856,29 @@ public class JeuPlateformeActivity extends Activity {
 
         private void hud(Canvas c) {
             p.setColor(0x55000000);
-            r.set(0, 0, lw, 1.5f * T);
+            r.set(0, 0, lw, 1.5f * TH);
             c.drawRect(r, p);
             int total = Math.max(3, vies);
             for (int i = 0; i < total; i++) {
-                coeur(c, 0.6f * T + i * 0.78f * T, 0.75f * T, 0.22f * T, i < vies ? 0xFFFF4D6D : 0x55FFFFFF);
+                coeur(c, 0.6f * TH + i * 0.78f * TH, 0.75f * TH, 0.22f * TH, i < vies ? 0xFFFF4D6D : 0x55FFFFFF);
             }
-            float x0 = 0.6f * T + total * 0.78f * T + 0.4f * T;
-            texte(c, "Lv " + niveau, x0, 0.98f * T, 0.55f * T, 0xFFFFFFFF, Paint.Align.LEFT);
-            texte(c, String.valueOf(score), lw * 0.5f, 0.98f * T, 0.62f * T, 0xFFFFF59D, Paint.Align.CENTER);
+            float x0 = 0.6f * TH + total * 0.78f * TH + 0.4f * TH;
+            texte(c, "Lv " + niveau, x0, 0.98f * TH, 0.55f * TH, 0xFFFFFFFF, Paint.Align.LEFT);
+            texte(c, String.valueOf(score), lw * 0.5f, 0.98f * TH, 0.62f * TH, 0xFFFFF59D, Paint.Align.CENTER);
             // pièces
             float cx = lw * 0.68f;
             p.setColor(0xFFFFB300);
-            c.drawCircle(cx, 0.75f * T, 0.26f * T, p);
+            c.drawCircle(cx, 0.75f * TH, 0.26f * TH, p);
             p.setColor(0xFFFFE082);
-            c.drawCircle(cx, 0.75f * T, 0.15f * T, p);
-            texte(c, "×" + nbPieces, cx + 0.45f * T, 0.98f * T, 0.55f * T, 0xFFFFFFFF, Paint.Align.LEFT);
+            c.drawCircle(cx, 0.75f * TH, 0.15f * TH, p);
+            texte(c, "×" + nbPieces, cx + 0.45f * TH, 0.98f * TH, 0.55f * TH, 0xFFFFFFFF, Paint.Align.LEFT);
             // pause
             p.setColor(0x66000000);
-            c.drawCircle(lw - 0.8f * T, 0.8f * T, 0.5f * T, p);
+            c.drawCircle(lw - 0.8f * TH, 0.8f * TH, 0.5f * TH, p);
             p.setColor(0xFFFFFFFF);
-            r.set(lw - 0.8f * T - 0.2f * T, 0.8f * T - 0.2f * T, lw - 0.8f * T - 0.07f * T, 0.8f * T + 0.2f * T);
+            r.set(lw - 0.8f * TH - 0.2f * TH, 0.8f * TH - 0.2f * TH, lw - 0.8f * TH - 0.07f * TH, 0.8f * TH + 0.2f * TH);
             c.drawRect(r, p);
-            r.set(lw - 0.8f * T + 0.07f * T, 0.8f * T - 0.2f * T, lw - 0.8f * T + 0.2f * T, 0.8f * T + 0.2f * T);
+            r.set(lw - 0.8f * TH + 0.07f * TH, 0.8f * TH - 0.2f * TH, lw - 0.8f * TH + 0.2f * TH, 0.8f * TH + 0.2f * TH);
             c.drawRect(r, p);
         }
 
@@ -866,7 +886,7 @@ public class JeuPlateformeActivity extends Activity {
             p.setColor(actif ? 0x88FFFFFF : 0x44FFFFFF);
             c.drawCircle(cx, cy, ra, p);
             p.setStyle(Paint.Style.STROKE);
-            p.setStrokeWidth(0.07f * T);
+            p.setStrokeWidth(0.07f * TH);
             p.setColor(0xAAFFFFFF);
             c.drawCircle(cx, cy, ra, p);
             p.setStyle(Paint.Style.FILL);
@@ -875,9 +895,9 @@ public class JeuPlateformeActivity extends Activity {
         private void fleche(Canvas c, float cx, float cy, int sens) {
             p.setColor(0xFFFFFFFF);
             chemin.reset();
-            chemin.moveTo(cx + sens * 0.38f * T, cy);
-            chemin.lineTo(cx - sens * 0.2f * T, cy - 0.38f * T);
-            chemin.lineTo(cx - sens * 0.2f * T, cy + 0.38f * T);
+            chemin.moveTo(cx + sens * 0.38f * TH, cy);
+            chemin.lineTo(cx - sens * 0.2f * TH, cy - 0.38f * TH);
+            chemin.lineTo(cx - sens * 0.2f * TH, cy + 0.38f * TH);
             chemin.close();
             c.drawPath(chemin, p);
         }
@@ -889,7 +909,7 @@ public class JeuPlateformeActivity extends Activity {
             bouton(c, dcx, gy, gr, droite);
             fleche(c, dcx, gy, 1);
             bouton(c, scx, sy, sr, saut);
-            texte(c, "JUMP", scx, sy + 0.2f * T, 0.55f * T, 0xFFFFFFFF, Paint.Align.CENTER);
+            texte(c, "JUMP", scx, sy + 0.2f * TH, 0.55f * TH, 0xFFFFFFFF, Paint.Align.CENTER);
         }
 
         private void messages(Canvas c) {
@@ -913,12 +933,12 @@ public class JeuPlateformeActivity extends Activity {
             p.setColor(0x88000000);
             r.set(0, 0, lw, lh);
             c.drawRect(r, p);
-            texte(c, t1, lw / 2f, lh * 0.40f, 0.95f * T, 0xFFFFFFFF, Paint.Align.CENTER);
-            texte(c, t2, lw / 2f, lh * 0.40f + 0.9f * T, 0.5f * T, 0xFFE3E5EA, Paint.Align.CENTER);
-            texte(c, t3, lw / 2f, lh * 0.40f + 1.7f * T, 0.55f * T, 0xFFFFC857, Paint.Align.CENTER);
+            texte(c, t1, lw / 2f, lh * 0.40f, 0.95f * TH, 0xFFFFFFFF, Paint.Align.CENTER);
+            texte(c, t2, lw / 2f, lh * 0.40f + 0.9f * TH, 0.5f * TH, 0xFFE3E5EA, Paint.Align.CENTER);
+            texte(c, t3, lw / 2f, lh * 0.40f + 1.7f * TH, 0.55f * TH, 0xFFFFC857, Paint.Align.CENTER);
             String monde = ScoresJeux.meilleur(cle);
             if (etat != NIVEAU && !monde.isEmpty()) {
-                texte(c, "🥇 Meilleur joueur : " + monde, lw / 2f, lh * 0.40f + 2.5f * T, 0.45f * T, 0xFFB3E5FC, Paint.Align.CENTER);
+                texte(c, "🥇 Meilleur joueur : " + monde, lw / 2f, lh * 0.40f + 2.5f * TH, 0.45f * TH, 0xFFB3E5FC, Paint.Align.CENTER);
             }
         }
     }

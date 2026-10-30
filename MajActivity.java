@@ -35,7 +35,7 @@ import java.io.OutputStream;
 public class MajActivity extends Activity {
 
     private static final String EXEMPLE = "{\n"
-            + "  \"titre\": \"Sossokouamé\",\n"
+            + "  \"titre\": \"Kouamé Play Box\",\n"
             + "  \"bandeau\": \"Bienvenue !\",\n"
             + "  \"theme\": {\"fond_haut\": \"#6A6E77\", \"fond_bas\": \"#5C6068\", \"jaune\": \"#FFC857\", \"rayon\": 1},\n"
             + "  \"annonce\": {\"id\": \"a1\", \"titre\": \"Nouveau\", \"message\": \"Une nouveauté est arrivée.\"},\n"

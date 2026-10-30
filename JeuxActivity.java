@@ -16,12 +16,12 @@ import org.json.JSONObject;
 
 import java.util.HashMap;
 
-/** Menu « JEUX » : Panda Dash, Super Kouamé (style Mario), Serpent, Commando Kouamé (tir et action) et Liquide (tri de couleurs). Les records sont gardés sur le téléphone. */
+/** Menu « JEUX » : Panda Dash, Super Kouamé (style Mario), Serpent, Commando Kouamé (tir et action), Liquide (tri de couleurs) et Combat Mortel (robot ou joueur en ligne). Les records sont gardés sur le téléphone. */
 public class JeuxActivity extends Activity {
 
     private static final String PREFS = "jeux";
 
-    private static final String[] JEUX = {"panda", "mario", "serpent", "commando", "liquide"};
+    private static final String[] JEUX = {"panda", "mario", "serpent", "commando", "liquide", "motard"};
 
     /** Par jeu : [0] mon record, [1] meilleur joueur de tous les joueurs. */
     private final HashMap<String, TextView[]> champs = new HashMap<>();
@@ -75,6 +75,11 @@ public class JeuxActivity extends Activity {
                 "Versez les liquides d'un tube à l'autre pour que chaque tube ne contienne plus qu'une seule couleur. Les niveaux se compliquent.",
                 0xFF00897B, 0xFF8E24AA,
                 new Intent(this, JeuLiquideActivity.class));
+
+        carte(root, "motard", "🥊", "Combat Mortel",
+                "Jeu de combat : poings, pieds, garde et attaque spéciale. Affronte le robot (10 niveaux, très fort) ou invite un joueur en ligne.",
+                0xFFB71C1C, 0xFF7B4DFF,
+                new Intent(this, JeuMotardActivity.class));
 
         ScrollView sv = new ScrollView(this);
         sv.setFillViewport(true);

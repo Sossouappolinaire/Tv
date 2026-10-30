@@ -150,7 +150,7 @@ final class MiseAJour {
                         try {
                             a.startActivity(new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:" + a.getPackageName())));
                         } catch (Exception e) {
-                            Toast.makeText(a, "Ouvrez Réglages > Applications > Sossokouamé > Installer des applis inconnues", Toast.LENGTH_LONG).show();
+                            Toast.makeText(a, "Ouvrez Réglages > Applications > Kouamé Play Box > Installer des applis inconnues", Toast.LENGTH_LONG).show();
                         }
                     })
                     .setNegativeButton("Annuler", null)
@@ -243,7 +243,7 @@ final class MiseAJour {
             int flags = Build.VERSION.SDK_INT >= 28 ? PackageManager.GET_SIGNING_CERTIFICATES : 0;
             PackageInfo neuf = pm.getPackageArchiveInfo(f.getAbsolutePath(), flags);
             if (neuf == null) return "Le fichier téléchargé n'est pas un APK valide.";
-            if (!c.getPackageName().equals(neuf.packageName)) return "Ce fichier n'est pas l'application Sossokouamé.";
+            if (!c.getPackageName().equals(neuf.packageName)) return "Ce fichier n'est pas l'application Kouamé Play Box.";
             long vNeuf = Build.VERSION.SDK_INT >= 28 ? neuf.getLongVersionCode() : neuf.versionCode;
             if (vNeuf <= versionInstallee(c)) return "Cette version n'est pas plus récente que celle installée.";
             if (Build.VERSION.SDK_INT >= 28) {

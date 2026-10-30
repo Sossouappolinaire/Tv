@@ -59,6 +59,7 @@ public class JeuCommandoActivity extends Activity {
     private static final class VueCommando extends View {
 
         // Le jeu est dessiné dans un repère de 360 unités de haut, quelle que soit la taille de l'écran.
+        private static final float ZOOM = 1.4f;   // le soldat et les ennemis paraissent 1,4 fois plus grands
         private static final float HAUT = 360f, SOL = 300f, GRAV = 1500f, VIT = 175f, SAUT = 560f;
         private static final int ATTENTE = 0, JEU = 1, PAUSE = 2, NIVEAU = 3, FIN = 4;
         private static final int RUN = 0, TIREUR = 1, TOURELLE = 2, CAPSULE = 3, BOSS = 4;
@@ -100,7 +101,7 @@ public class JeuCommandoActivity extends Activity {
         private int etat = ATTENTE;
         private int score, record, niveau = 1, vies = 3, arme = 0, face = 1;
         private float px, py, pvy, camX, longueur, largeur = 640f, k = 1f;
-        private float inv, cdTir, tNiveau, msgT, temps;
+        private float inv, cdTir, tNiveau, msgT, temps, tPas;
         private boolean psol, gauche, droite, saut, tir;
         private String msg = "";
         private long dernier, finTemps;
@@ -246,6 +247,13 @@ public class JeuCommandoActivity extends Activity {
             if (saut && psol) {
                 pvy = -SAUT;
                 psol = false;
+                Sons.jouer(ctx, Sons.SAUT);
+            }
+            if (dir != 0f && psol) {                 // petit bruit de pas quand il avance
+                tPas -= dt;
+                if (tPas <= 0f) { Sons.jouer(ctx, Sons.PAS); tPas = 0.28f; }
+            } else {
+                tPas = 0f;
             }
             pvy += GRAV * dt;
             float yNouveau = py + pvy * dt;
@@ -268,9 +276,10 @@ public class JeuCommandoActivity extends Activity {
                 cdTir = arme == 2 ? 0.10f : arme == 1 ? 0.32f : 0.24f;
             }
 
-            float cible = px - largeur * 0.38f;
+            float vis = largeur / ZOOM;                      // largeur réellement visible
+            float cible = px - vis * 0.38f;
             if (cible > camX) camX = cible;
-            camX = Math.max(0f, Math.min(camX, longueur - largeur));
+            camX = Math.max(0f, Math.min(camX, longueur - vis));
 
             majEnnemis(dt);
             majBalles(dt);
@@ -286,7 +295,7 @@ public class JeuCommandoActivity extends Activity {
                     ennemis.remove(i);
                     continue;
                 }
-                if (ecran > largeur + 120f) continue;
+                if (ecran > largeur / ZOOM + 120f) continue;
                 e.anim += dt;
                 boolean visible = ecran > 15f && ecran < largeur - 15f;
                 switch (e.type) {
@@ -368,7 +377,7 @@ public class JeuCommandoActivity extends Activity {
                             touche = true;
                             e.pv--;
                             eclater(b.x, b.y, 0xFFFFE082, 3);
-                            if (e.pv <= 0) tuer(e, j);
+                            if (e.pv <= 0) tuer(e, j); else Sons.jouer(ctx, Sons.TOUCHE);
                         }
                     }
                     if (touche) {
@@ -407,18 +416,21 @@ public class JeuCommandoActivity extends Activity {
 
         private void tuer(Ennemi e, int index) {
             ennemis.remove(index);
+            if (e.type != CAPSULE) Sons.jouer(ctx, Sons.EXPLOSION);
             eclater(e.x, e.y - e.h / 2f, 0xFFFF7043, e.type == BOSS ? 40 : 12);
             switch (e.type) {
                 case RUN: score += 100; break;
                 case TIREUR: score += 200; break;
                 case TOURELLE: score += 300; break;
                 case CAPSULE:
+                    Sons.jouer(ctx, Sons.PIECE);
                     score += 500;
                     arme = rnd.nextInt(2) + 1;
                     msg = arme == 1 ? "ARME : TIR LARGE" : "ARME : TIR RAPIDE";
                     msgT = 1.8f;
                     break;
                 default:
+                    Sons.jouer(ctx, Sons.GAGNE);          // robot détruit : niveau gagné
                     score += 2000;
                     balles.clear();
                     msg = "";
@@ -434,6 +446,7 @@ public class JeuCommandoActivity extends Activity {
             vies--;
             arme = 0;
             eclater(px, py - 20f, 0xFFEF5350, 18);
+            Sons.jouer(ctx, vies <= 0 ? Sons.PERDU : Sons.PERDRE_VIE);
             if (vies <= 0) {
                 etat = FIN;
                 finTemps = SystemClock.uptimeMillis();
@@ -473,6 +486,7 @@ public class JeuCommandoActivity extends Activity {
 
         /** Tir du joueur : tout droit, ou vers l'ennemi le plus proche s'il est à peu près devant (visée assistée). */
         private void tirerJoueur() {
+            Sons.jouer(ctx, Sons.TIR);
             float bx = px + face * 16f, by = py - 24f;
             float dx = face, dy = 0f;
             float meilleur = 520f;
@@ -480,7 +494,7 @@ public class JeuCommandoActivity extends Activity {
                 Ennemi e = ennemis.get(i);
                 float ex = (e.x - px) * face;
                 float ey = (e.y - e.h / 2f) - by;
-                if (ex > 20f && ex < meilleur && Math.abs(ey) <= ex * 1.1f + 20f && e.x - camX < largeur) {
+                if (ex > 20f && ex < meilleur && Math.abs(ey) <= ex * 1.1f + 20f && e.x - camX < largeur / ZOOM) {
                     meilleur = ex;
                     dx = e.x - bx;
                     dy = (e.y - e.h / 2f) - by;
@@ -608,6 +622,10 @@ public class JeuCommandoActivity extends Activity {
             c.drawRect(0f, 0f, largeur, HAUT, p);
             p.setShader(null);
 
+            c.save();
+            c.translate(0f, SOL * (1f - ZOOM));     // zoom sur le monde, le sol reste à la même hauteur
+            c.scale(ZOOM, ZOOM);
+
             // collines et arbres lointains (défilement plus lent)
             for (int i = -1; i < 6; i++) {
                 float hx = i * 220f - (camX * 0.2f) % 220f;
@@ -657,6 +675,7 @@ public class JeuCommandoActivity extends Activity {
                 Eclat e = eclats.get(i);
                 rond(c, e.x, e.y, 2.5f, e.couleur);
             }
+            c.restore();
             c.restore();
 
             dessinerInterface(c);
@@ -745,7 +764,7 @@ public class JeuCommandoActivity extends Activity {
 
             for (int i = 0; i < ennemis.size(); i++) {                                     // vie du boss
                 Ennemi e = ennemis.get(i);
-                if (e.type != BOSS || e.x - camX > largeur - 10f) continue;
+                if (e.type != BOSS || e.x - camX > largeur / ZOOM - 10f) continue;
                 float w = 220f, x0 = (largeur - w) / 2f;
                 rect(c, x0, 56f, x0 + w, 64f, 0x99000000);
                 rect(c, x0, 56f, x0 + w * Math.max(0, e.pv) / (float) e.pvMax, 64f, 0xFFFF1744);
